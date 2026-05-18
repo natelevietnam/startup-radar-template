@@ -69,10 +69,15 @@ def run() -> int:
     if edgar_cfg.get("enabled"):
         print("\n[EDGAR] Fetching Form D filings...")
         from sources import sec_edgar
+        user_cfg = cfg.get("user", {})
+        ua_name = user_cfg.get("name") or "Startup Radar"
+        ua_email = user_cfg.get("email") or ""
+        user_agent = f"{ua_name} {ua_email}".strip() if ua_email else None
         found = sec_edgar.fetch(
             lookback_days=int(edgar_cfg.get("lookback_days", 7)),
             min_amount_musd=float(edgar_cfg.get("min_amount_musd", 5)),
             sic_codes=edgar_cfg.get("industry_sic_codes") or None,
+            user_agent=user_agent,
         )
         print(f"  {len(found)} candidate(s)")
         all_startups.extend(found)
@@ -88,6 +93,31 @@ def run() -> int:
             all_startups.extend(found)
         except Exception as e:
             print(f"  Gmail source failed: {e}")
+
+    # --- Optional: Gmail jobs (recruiter emails -> job_matches) ---
+    jobs_cfg = sources_cfg.get("gmail_jobs", {})
+    if jobs_cfg.get("enabled"):
+        print("\n[Gmail Jobs] Fetching...")
+        try:
+            from sources import gmail_jobs
+            jobs = gmail_jobs.fetch(jobs_cfg)
+            print(f"  {len(jobs)} role candidate(s)")
+            if jobs:
+                existing_keys = database.get_existing_job_keys()
+                fresh = [
+                    j for j in jobs
+                    if f"{j['company_name'].lower().strip()}|{j['role_title'].lower().strip()}" not in existing_keys
+                ]
+                if fresh:
+                    added = database.insert_job_matches(fresh)
+                    print(f"  Added {added} new job(s) to SQLite")
+                    for j in fresh:
+                        loc = f" | {j['location']}" if j.get("location") else ""
+                        print(f"    {j['company_name']} | {j['role_title']}{loc}")
+                else:
+                    print("  No new jobs to add")
+        except Exception as e:
+            print(f"  Gmail jobs source failed: {e}")
 
     print(f"\nTotal extracted: {len(all_startups)}")
 

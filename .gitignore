@@ -8,12 +8,17 @@ token.json
 
 # User data
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 connections.csv
 LinkedIn*.csv
 logs/
 reports/
+
+# Personal scheduling config (has absolute paths)
+scheduling/launchd.plist
 
 # Python
 __pycache__/

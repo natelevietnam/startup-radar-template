@@ -5,6 +5,9 @@
 
 user:
   name: "Your Name"
+  # SEC EDGAR requires a real contact email in the User-Agent header.
+  # Without one, the EDGAR source will be rate-limited / blocked (HTTP 403).
+  email: "you@example.com"
   # Short background blurb — used by the DeepDive skill when tailoring fit rationales.
   # Example: "Software engineer, 6 years backend, looking for early-stage infra startups."
   background: "Describe yourself in one sentence."

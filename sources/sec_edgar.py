@@ -17,18 +17,25 @@ import requests
 from models import Startup
 
 EDGAR_SEARCH_URL = "https://efts.sec.gov/LATEST/search-index"
-EDGAR_HEADERS = {
-    "User-Agent": "startup-radar-template (github.com/xavierahojjx-afk/startup-radar-template)",
-    "Accept": "application/json",
-}
+
+
+def _build_headers(user_agent: str | None) -> dict:
+    if not user_agent:
+        user_agent = "Startup Radar contact@example.com"
+    return {"User-Agent": user_agent, "Accept": "application/json"}
 
 
 def fetch(
     lookback_days: int = 7,
     min_amount_musd: float = 5.0,
     sic_codes: Iterable[str] | None = None,
+    user_agent: str | None = None,
 ) -> list[Startup]:
-    """Search EDGAR full-text search for recent Form D filings."""
+    """Search EDGAR full-text search for recent Form D filings.
+
+    SEC requires a User-Agent that includes the requester's contact info
+    (e.g., "Jane Doe jane@example.com"). Without it, requests return 403.
+    """
     end = datetime.utcnow().date()
     start = end - timedelta(days=lookback_days)
 
@@ -43,7 +50,7 @@ def fetch(
         params["sic"] = ",".join(sic_codes)
 
     try:
-        resp = requests.get(EDGAR_SEARCH_URL, params=params, headers=EDGAR_HEADERS, timeout=20)
+        resp = requests.get(EDGAR_SEARCH_URL, params=params, headers=_build_headers(user_agent), timeout=20)
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:

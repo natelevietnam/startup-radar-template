@@ -82,7 +82,7 @@ class StartupFilter:
         if not self.locations:
             return True
         if not location:
-            return False
+            return True
         lower = location.lower()
         return any(loc in lower for loc in self.locations)
 

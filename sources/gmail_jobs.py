@@ -134,6 +134,8 @@ def fetch(jobs_cfg: dict) -> list[dict]:
     out: list[dict] = []
     new_ids: list[str] = []
 
+    unparsed_senders: set[str] = set()
+
     for meta in messages:
         msg_id = meta["id"]
         if database.is_processed("gmail_jobs", msg_id):
@@ -152,19 +154,29 @@ def fetch(jobs_cfg: dict) -> list[dict]:
                 parser_key = key
                 break
         if not parser_key:
+            # Sender doesn't match config; mark processed so we don't keep
+            # refetching unrelated mail that slipped through the gmail query.
             new_ids.append(msg_id)
             continue
 
         parser = PARSERS.get(parser_key)
         if not parser:
-            print(f"  No parser registered for '{parser_key}'")
-            new_ids.append(msg_id)
+            # Parser stub not yet written. Do NOT mark processed — once the
+            # parser is added, the next run will pick up this message.
+            unparsed_senders.add(parser_key)
             continue
 
         body = _extract_body(msg.get("payload", {}))
         msg_url = f"https://mail.google.com/mail/u/0/#inbox/{msg_id}"
         out.extend(parser(body, subject, msg_url))
         new_ids.append(msg_id)
+
+    if unparsed_senders:
+        for key in sorted(unparsed_senders):
+            print(
+                f"  [pending parser] '{key}' has unread mail but no parser registered yet. "
+                f"Add one to PARSERS in sources/gmail_jobs.py — the message will be parsed on next run."
+            )
 
     database.mark_processed("gmail_jobs", new_ids)
     return out

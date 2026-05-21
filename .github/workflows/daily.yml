@@ -2,8 +2,10 @@ name: Daily Startup Radar
 
 on:
   schedule:
-    # 15:00 UTC daily = 08:00 PT / 11:00 ET. Edit to taste.
-    - cron: '0 15 * * *'
+    # 11:00 UTC daily = 04:00 PT / 07:00 ET. Off-peak GitHub Actions
+    # queue slot — scheduled jobs on forks at peak hours (15:00 UTC) are
+    # often delayed by hours or skipped entirely.
+    - cron: '0 11 * * *'
   workflow_dispatch: {}
 
 jobs:

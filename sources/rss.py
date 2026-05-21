@@ -33,14 +33,40 @@ def _strip_html(html: str) -> str:
     return BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
 
 
+def _refine_company(raw: str) -> str:
+    """Strip leading editorial prefixes from a headline-derived company name.
+
+    Headlines like "Exclusive: Xpanner raises $18M" or "Marketing operating
+    system Nectar Social raises $30M" produce noisy raw extractions. This
+    cleanup keeps the trailing contiguous run of capitalized words, which is
+    almost always the real company name.
+    """
+    if not raw:
+        return ""
+    # "Prefix: Company" → "Company"
+    if ": " in raw:
+        raw = raw.rsplit(": ", 1)[1].strip()
+    words = raw.split()
+    if not words:
+        return ""
+    # Find longest trailing run of words that start with an uppercase letter.
+    end = len(words)
+    start = end
+    while start > 0 and words[start - 1] and words[start - 1][0].isupper():
+        start -= 1
+    if start == end:
+        return raw  # No capitalized tail; return as-is rather than empty.
+    return " ".join(words[start:end])
+
+
 def _extract_company(title: str) -> str:
     m = _COMPANY_SUBJECT_RE.match(title)
     if m:
-        return m.group(1).strip()
+        return _refine_company(m.group(1).strip())
     parts = re.split(r"\s+(?:raises|secures|closes|lands|nabs|announces|picks up)\s+",
                      title, maxsplit=1, flags=re.IGNORECASE)
     if len(parts) == 2:
-        return parts[0].strip()
+        return _refine_company(parts[0].strip())
     return ""
 
 

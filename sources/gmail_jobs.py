@@ -57,7 +57,10 @@ def _parse_dgcsearch(body: str, subject: str, msg_url: str) -> list[dict]:
         return []
 
     body = body.replace("\r\n", "\n")
-    sig_idx = body.find("Denis Goncharov-Carey")
+    # Forwarded emails contain "Denis Goncharov-Carey" in the embedded "From:"
+    # header at the top. Using rfind ensures we cut at the trailing signature
+    # block rather than the leading forwarded-header, preserving the JD body.
+    sig_idx = body.rfind("Denis Goncharov-Carey")
     if sig_idx > 0:
         body = body[:sig_idx]
 

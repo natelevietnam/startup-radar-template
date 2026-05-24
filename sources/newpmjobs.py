@@ -11,11 +11,60 @@ caller dedupe + filter. No API key, no scraping, no headless browser.
 
 from __future__ import annotations
 
+import re
+
 import requests
-from typing import Iterable
 
 API_URL = "https://api.newpmjobs.com/api/feed"
 HEADERS = {"User-Agent": "startup-radar-template/1.0 (https://github.com/natelevietnam/startup-radar-template)"}
+
+
+# Despite the site name, the feed includes adjacent non-PM roles such as
+# Business-Operations Program Managers and Chief-of-Staff postings at
+# product-led orgs. These patterns mark a title as a *real* product role.
+_PM_INCLUDE = (
+    "product manager",
+    "product management",
+    "product lead",
+    "head of product",
+    "director of product",
+    "director, product",
+    "vp of product",
+    "vp, product",
+    "chief product",
+    "product owner",
+    "founding pm",
+)
+
+# False friends — the title contains a PM-adjacent phrase but is not a PM role.
+_PM_EXCLUDE = (
+    "program manager",
+    "project manager",
+    "product marketing",
+    "product designer",
+    "product design",
+    "product analyst",
+    "chief of staff",
+    "engineering manager",
+)
+
+
+def is_product_role(title: str) -> bool:
+    """True if the role title looks like a Product-Management role
+    (PM / Sr PM / Staff PM / Head of Product / CPO / Product Owner / ...).
+    """
+    if not title:
+        return False
+    t = title.lower()
+    if any(bad in t for bad in _PM_EXCLUDE):
+        return False
+    if any(good in t for good in _PM_INCLUDE):
+        return True
+    # Standalone "PM" abbreviation (word-boundary, uppercase only to avoid
+    # matching "pm" inside words like "campaign").
+    if re.search(r"\bPM\b", title):
+        return True
+    return False
 
 
 def _format_company_description(job: dict) -> str:
@@ -58,6 +107,7 @@ def fetch(cfg: dict | None = None) -> list[dict]:
         return []
 
     jobs = data.get("jobs") or []
+    product_only = cfg.get("product_only", True)
     out: list[dict] = []
     for j in jobs:
         if j.get("status") and j["status"] != "active":
@@ -65,6 +115,8 @@ def fetch(cfg: dict | None = None) -> list[dict]:
         company = (j.get("company") or {}).get("name") or ""
         role = j.get("title") or ""
         if not company or not role:
+            continue
+        if product_only and not is_product_role(role):
             continue
         out.append({
             "company_name": company.strip(),

@@ -126,6 +126,38 @@ def run() -> int:
         except Exception as e:
             print(f"  NewPMJobs source failed: {e}")
 
+    # --- Optional: Remote OK (public remote job board API -> job_matches) ---
+    rok_cfg = sources_cfg.get("remoteok", {})
+    if rok_cfg.get("enabled"):
+        print("\n[Remote OK] Fetching...")
+        try:
+            from sources import remoteok
+            from filters import JobFilter
+            jobs = remoteok.fetch(rok_cfg)
+            print(f"  {len(jobs)} matching role(s)")
+            if jobs and rok_cfg.get("location_filter", True):
+                flt = JobFilter(cfg)
+                jobs = [j for j in jobs if flt.location_matches(j["location"])]
+                print(f"  {len(jobs)} after location filter")
+            if jobs:
+                existing_keys = database.get_existing_job_keys()
+                fresh = [
+                    j for j in jobs
+                    if f"{j['company_name'].lower().strip()}|{j['role_title'].lower().strip()}" not in existing_keys
+                ]
+                if fresh:
+                    added = database.insert_job_matches(fresh)
+                    print(f"  Added {added} new job(s) to SQLite")
+                    for j in fresh[:10]:
+                        loc = f" | {j['location'][:30]}" if j.get("location") else ""
+                        print(f"    {j['company_name']} | {j['role_title'][:50]}{loc}")
+                    if len(fresh) > 10:
+                        print(f"    ... and {len(fresh) - 10} more")
+                else:
+                    print("  No new jobs to add")
+        except Exception as e:
+            print(f"  Remote OK source failed: {e}")
+
     # --- Optional: Gmail jobs (recruiter emails -> job_matches) ---
     jobs_cfg = sources_cfg.get("gmail_jobs", {})
     if jobs_cfg.get("enabled"):

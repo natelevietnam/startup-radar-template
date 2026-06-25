@@ -196,6 +196,33 @@ def _add_delete_col(frame):
     return frame
 
 
+def _delete_all_control(key, frame, delete_row_fn):
+    """Render a confirm-guarded "Delete all" button for ``frame``.
+
+    Two-click pattern: the first click arms a confirmation (since deletes are
+    permanent and have no undo), the second carries it out. Returns True when a
+    deletion actually happened, so the caller can trigger a rerun.
+    """
+    confirm_key = f"_confirm_delete_all_{key}"
+    n = len(frame)
+    if not st.session_state.get(confirm_key):
+        if st.button(f"\U0001f5d1\ufe0f Delete all {n}", key=f"del_all_{key}"):
+            st.session_state[confirm_key] = True
+            st.rerun()
+        return False
+    st.warning(f"Permanently delete all {n} row(s)? This cannot be undone.")
+    c1, c2 = st.columns(2)
+    if c1.button(f"Yes, delete {n}", key=f"del_all_yes_{key}", type="primary"):
+        for idx in frame.index:
+            delete_row_fn(frame.loc[idx])
+        st.session_state[confirm_key] = False
+        return True
+    if c2.button("Cancel", key=f"del_all_cancel_{key}"):
+        st.session_state[confirm_key] = False
+        st.rerun()
+    return False
+
+
 # ===================================================================
 # PAGE: Dashboard
 # ===================================================================
@@ -428,6 +455,9 @@ elif page == "Companies":
     if uncategorized.empty:
         st.caption("All companies have been categorized.")
     else:
+        if _delete_all_control("co_unc", uncategorized,
+                               lambda r: database.delete_startup(r["Company Name"])):
+            _needs_rerun = True
         edited_unc = st.data_editor(
             _add_delete_col(uncategorized), column_config=_col_config,
             hide_index=True, use_container_width=True, disabled=[], key="uncategorized_editor",
@@ -592,6 +622,9 @@ elif page == "Job Matches":
     if uncategorized_jobs.empty:
         st.caption("All jobs have been categorized.")
     else:
+        if _delete_all_control("job_unc", uncategorized_jobs,
+                               lambda r: database.delete_job_match(r["Company"], r["Role"])):
+            _jobs_needs_rerun = True
         edited = st.data_editor(
             _add_delete_col(_add_job_connections_col(uncategorized_jobs[display_cols])),
             column_config=_job_col_config, hide_index=True, use_container_width=True,

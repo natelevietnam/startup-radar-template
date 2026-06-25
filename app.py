@@ -196,28 +196,35 @@ def _add_delete_col(frame):
     return frame
 
 
-def _delete_all_control(key, frame, delete_row_fn):
-    """Render a confirm-guarded "Delete all" button for ``frame``.
+def _delete_control(key, frame, edited_df, delete_row_fn):
+    """Confirm-guarded bulk delete for an Uncategorized grid.
 
-    Two-click pattern: the first click arms a confirmation (since deletes are
-    permanent and have no undo), the second carries it out. Returns True when a
-    deletion actually happened, so the caller can trigger a rerun.
+    The \U0001f5d1\ufe0f column acts as a *selector* here (it does not delete on
+    tick). Tick some rows and the button deletes just those
+    ("Delete selected (M)"); leave everything unticked and it deletes the whole
+    list ("Delete all N"). Two-click confirm, since deletes are permanent and
+    have no undo. Returns True when a deletion happened so the caller reruns.
     """
-    confirm_key = f"_confirm_delete_all_{key}"
-    n = len(frame)
+    trash = "\U0001f5d1\ufe0f"
+    checked = [idx for idx in edited_df.index
+               if idx in frame.index and bool(edited_df.loc[idx, trash])]
+    targets = checked if checked else list(frame.index)
+    n = len(targets)
+    label = f"Delete selected ({n})" if checked else f"Delete all {n}"
+    confirm_key = f"_confirm_delete_{key}"
     if not st.session_state.get(confirm_key):
-        if st.button(f"\U0001f5d1\ufe0f Delete all {n}", key=f"del_all_{key}"):
+        if n and st.button(f"\U0001f5d1\ufe0f {label}", key=f"del_{key}"):
             st.session_state[confirm_key] = True
             st.rerun()
         return False
-    st.warning(f"Permanently delete all {n} row(s)? This cannot be undone.")
+    st.warning(f"Permanently delete {n} row(s)? This cannot be undone.")
     c1, c2 = st.columns(2)
-    if c1.button(f"Yes, delete {n}", key=f"del_all_yes_{key}", type="primary"):
-        for idx in frame.index:
+    if c1.button(f"Yes, delete {n}", key=f"del_yes_{key}", type="primary"):
+        for idx in targets:
             delete_row_fn(frame.loc[idx])
         st.session_state[confirm_key] = False
         return True
-    if c2.button("Cancel", key=f"del_all_cancel_{key}"):
+    if c2.button("Cancel", key=f"del_cancel_{key}"):
         st.session_state[confirm_key] = False
         st.rerun()
     return False
@@ -383,13 +390,13 @@ elif page == "Companies":
         "\U0001f5d1\ufe0f": st.column_config.CheckboxColumn("\U0001f5d1\ufe0f", width="small"),
     }
 
-    def _persist_company_changes(original_df, edited_df):
+    def _persist_company_changes(original_df, edited_df, handle_delete=True):
         changed = False
         for idx in edited_df.index:
             if idx not in original_df.index:
                 continue
             company = original_df.loc[idx, "Company Name"]
-            if edited_df.loc[idx, "\U0001f5d1\ufe0f"]:
+            if handle_delete and edited_df.loc[idx, "\U0001f5d1\ufe0f"]:
                 database.delete_startup(company)
                 changed = True
                 continue
@@ -455,14 +462,16 @@ elif page == "Companies":
     if uncategorized.empty:
         st.caption("All companies have been categorized.")
     else:
-        if _delete_all_control("co_unc", uncategorized,
-                               lambda r: database.delete_startup(r["Company Name"])):
-            _needs_rerun = True
+        st.caption("Tick \U0001f5d1️ to select rows, then use the button below to "
+                   "delete just those. With nothing ticked, the button clears the whole list.")
         edited_unc = st.data_editor(
             _add_delete_col(uncategorized), column_config=_col_config,
             hide_index=True, use_container_width=True, disabled=[], key="uncategorized_editor",
         )
-        if _persist_company_changes(uncategorized, edited_unc):
+        if _persist_company_changes(uncategorized, edited_unc, handle_delete=False):
+            _needs_rerun = True
+        if _delete_control("co_unc", uncategorized, edited_unc,
+                           lambda r: database.delete_startup(r["Company Name"])):
             _needs_rerun = True
 
     if _needs_rerun:
@@ -546,12 +555,12 @@ elif page == "Job Matches":
         "\U0001f5d1\ufe0f": st.column_config.CheckboxColumn("\U0001f5d1\ufe0f", width="small"),
     }
 
-    def _persist_job_changes(original_df, edited_df):
+    def _persist_job_changes(original_df, edited_df, handle_delete=True):
         changed = False
         for idx in edited_df.index:
             if idx not in original_df.index:
                 continue
-            if edited_df.loc[idx, "\U0001f5d1\ufe0f"]:
+            if handle_delete and edited_df.loc[idx, "\U0001f5d1\ufe0f"]:
                 database.delete_job_match(original_df.loc[idx, "Company"], original_df.loc[idx, "Role"])
                 changed = True
                 continue
@@ -622,15 +631,17 @@ elif page == "Job Matches":
     if uncategorized_jobs.empty:
         st.caption("All jobs have been categorized.")
     else:
-        if _delete_all_control("job_unc", uncategorized_jobs,
-                               lambda r: database.delete_job_match(r["Company"], r["Role"])):
-            _jobs_needs_rerun = True
+        st.caption("Tick \U0001f5d1️ to select rows, then use the button below to "
+                   "delete just those. With nothing ticked, the button clears the whole list.")
         edited = st.data_editor(
             _add_delete_col(_add_job_connections_col(uncategorized_jobs[display_cols])),
             column_config=_job_col_config, hide_index=True, use_container_width=True,
             disabled=[], key="unc_jobs_editor",
         )
-        if _persist_job_changes(uncategorized_jobs, edited):
+        if _persist_job_changes(uncategorized_jobs, edited, handle_delete=False):
+            _jobs_needs_rerun = True
+        if _delete_control("job_unc", uncategorized_jobs, edited,
+                           lambda r: database.delete_job_match(r["Company"], r["Role"])):
             _jobs_needs_rerun = True
 
     if _jobs_needs_rerun:

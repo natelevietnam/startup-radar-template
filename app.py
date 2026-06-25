@@ -190,9 +190,12 @@ if _li_file is not None:
 # ---------------------------------------------------------------------------
 
 
-def _add_delete_col(frame):
+def _add_delete_col(frame, first=False):
     frame = frame.copy()
-    frame["\U0001f5d1\ufe0f"] = False
+    col = "\U0001f5d1\ufe0f"
+    frame[col] = False
+    if first:
+        frame = frame[[col] + [c for c in frame.columns if c != col]]
     return frame
 
 
@@ -465,7 +468,7 @@ elif page == "Companies":
         st.caption("Tick \U0001f5d1️ to select rows, then use the button below to "
                    "delete just those. With nothing ticked, the button clears the whole list.")
         edited_unc = st.data_editor(
-            _add_delete_col(uncategorized), column_config=_col_config,
+            _add_delete_col(uncategorized, first=True), column_config=_col_config,
             hide_index=True, use_container_width=True, disabled=[], key="uncategorized_editor",
         )
         if _persist_company_changes(uncategorized, edited_unc, handle_delete=False):
@@ -634,7 +637,7 @@ elif page == "Job Matches":
         st.caption("Tick \U0001f5d1️ to select rows, then use the button below to "
                    "delete just those. With nothing ticked, the button clears the whole list.")
         edited = st.data_editor(
-            _add_delete_col(_add_job_connections_col(uncategorized_jobs[display_cols])),
+            _add_delete_col(_add_job_connections_col(uncategorized_jobs[display_cols]), first=True),
             column_config=_job_col_config, hide_index=True, use_container_width=True,
             disabled=[], key="unc_jobs_editor",
         )

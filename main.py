@@ -103,8 +103,12 @@ def run() -> int:
             from filters import JobFilter
             jobs = newpmjobs.fetch(npj_cfg)
             print(f"  {len(jobs)} active PM role(s)")
+            flt = JobFilter(cfg)
+            _n = len(jobs)
+            jobs = [j for j in jobs if not flt.seniority_excluded(j.get("role_title", ""))]
+            if len(jobs) != _n:
+                print(f"  {len(jobs)} after seniority exclusion ({_n - len(jobs)} dropped)")
             if jobs and npj_cfg.get("location_filter", True):
-                flt = JobFilter(cfg)
                 jobs = [j for j in jobs if flt.location_matches(j["location"])]
                 print(f"  {len(jobs)} after location filter")
             if jobs:
@@ -135,8 +139,12 @@ def run() -> int:
             from filters import JobFilter
             jobs = remoteok.fetch(rok_cfg)
             print(f"  {len(jobs)} matching role(s)")
+            flt = JobFilter(cfg)
+            _n = len(jobs)
+            jobs = [j for j in jobs if not flt.seniority_excluded(j.get("role_title", ""))]
+            if len(jobs) != _n:
+                print(f"  {len(jobs)} after seniority exclusion ({_n - len(jobs)} dropped)")
             if jobs and rok_cfg.get("location_filter", True):
-                flt = JobFilter(cfg)
                 jobs = [j for j in jobs if flt.location_matches(j["location"])]
                 print(f"  {len(jobs)} after location filter")
             if jobs:
@@ -164,8 +172,14 @@ def run() -> int:
         print("\n[Gmail Jobs] Fetching...")
         try:
             from sources import gmail_jobs
+            from filters import JobFilter
             jobs = gmail_jobs.fetch(jobs_cfg)
             print(f"  {len(jobs)} role candidate(s)")
+            flt = JobFilter(cfg)
+            _n = len(jobs)
+            jobs = [j for j in jobs if not flt.seniority_excluded(j.get("role_title", ""))]
+            if len(jobs) != _n:
+                print(f"  {len(jobs)} after seniority exclusion ({_n - len(jobs)} dropped)")
             if jobs:
                 existing_keys = database.get_existing_job_keys()
                 fresh = [

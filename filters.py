@@ -110,6 +110,17 @@ class JobFilter:
             return True
         return any(r in t for r in self.roles)
 
+    def seniority_excluded(self, title: str) -> bool:
+        """True if the title contains any seniority_exclusions term.
+
+        Used to drop over/under-qualified job titles at ingestion without
+        requiring a positive role match (unlike role_matches).
+        """
+        if not title:
+            return False
+        t = title.lower()
+        return any(ex in t for ex in self.exclusions)
+
     def location_matches(self, location: str) -> bool:
         if not self.locations:
             return True

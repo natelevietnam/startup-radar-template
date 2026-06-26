@@ -199,38 +199,53 @@ def _add_delete_col(frame, first=False):
     return frame
 
 
-def _delete_control(key, frame, edited_df, delete_row_fn):
+def _delete_control(key, frame, edited_df, delete_row_fn, editor_key=None):
     """Confirm-guarded bulk delete for an Uncategorized grid.
 
     The \U0001f5d1\ufe0f column acts as a *selector* here (it does not delete on
     tick). Tick some rows and the button deletes just those
     ("Delete selected (M)"); leave everything unticked and it deletes the whole
     list ("Delete all N"). Two-click confirm, since deletes are permanent and
-    have no undo. Returns True when a deletion happened so the caller reruns.
+    have no undo.
+
+    Deletions happen inside button on_click callbacks, which fire *before* the
+    script's top-of-page data reload. That lets the list refresh in place on the
+    button's own rerun \u2014 no programmatic st.rerun(), which is what used to scroll
+    the page back to the top after every delete.
     """
     trash = "\U0001f5d1\ufe0f"
     checked = [idx for idx in edited_df.index
                if idx in frame.index and bool(edited_df.loc[idx, trash])]
     targets = checked if checked else list(frame.index)
     n = len(targets)
-    label = f"Delete selected ({n})" if checked else f"Delete all {n}"
     confirm_key = f"_confirm_delete_{key}"
+
+    def _arm():
+        st.session_state[confirm_key] = True
+
+    def _cancel():
+        st.session_state[confirm_key] = False
+
+    def _do_delete(rows):
+        for idx in rows:
+            if idx in frame.index:
+                delete_row_fn(frame.loc[idx])
+        st.session_state[confirm_key] = False
+        if editor_key:
+            # Drop the editor's stale selection state so the leftover ticks
+            # don't re-apply to whatever rows shift into those positions.
+            st.session_state.pop(editor_key, None)
+
     if not st.session_state.get(confirm_key):
-        if n and st.button(f"\U0001f5d1\ufe0f {label}", key=f"del_{key}"):
-            st.session_state[confirm_key] = True
-            st.rerun()
-        return False
+        if n:
+            label = f"Delete selected ({n})" if checked else f"Delete all {n}"
+            st.button(f"\U0001f5d1\ufe0f {label}", key=f"del_{key}", on_click=_arm)
+        return
     st.warning(f"Permanently delete {n} row(s)? This cannot be undone.")
     c1, c2 = st.columns(2)
-    if c1.button(f"Yes, delete {n}", key=f"del_yes_{key}", type="primary"):
-        for idx in targets:
-            delete_row_fn(frame.loc[idx])
-        st.session_state[confirm_key] = False
-        return True
-    if c2.button("Cancel", key=f"del_cancel_{key}"):
-        st.session_state[confirm_key] = False
-        st.rerun()
-    return False
+    c1.button(f"Yes, delete {n}", key=f"del_yes_{key}", type="primary",
+              on_click=_do_delete, args=(list(targets),))
+    c2.button("Cancel", key=f"del_cancel_{key}", on_click=_cancel)
 
 
 # ===================================================================
@@ -473,9 +488,9 @@ elif page == "Companies":
         )
         if _persist_company_changes(uncategorized, edited_unc, handle_delete=False):
             _needs_rerun = True
-        if _delete_control("co_unc", uncategorized, edited_unc,
-                           lambda r: database.delete_startup(r["Company Name"])):
-            _needs_rerun = True
+        _delete_control("co_unc", uncategorized, edited_unc,
+                        lambda r: database.delete_startup(r["Company Name"]),
+                        editor_key="uncategorized_editor")
 
     if _needs_rerun:
         st.rerun()
@@ -643,9 +658,9 @@ elif page == "Job Matches":
         )
         if _persist_job_changes(uncategorized_jobs, edited, handle_delete=False):
             _jobs_needs_rerun = True
-        if _delete_control("job_unc", uncategorized_jobs, edited,
-                           lambda r: database.delete_job_match(r["Company"], r["Role"])):
-            _jobs_needs_rerun = True
+        _delete_control("job_unc", uncategorized_jobs, edited,
+                        lambda r: database.delete_job_match(r["Company"], r["Role"]),
+                        editor_key="unc_jobs_editor")
 
     if _jobs_needs_rerun:
         st.rerun()

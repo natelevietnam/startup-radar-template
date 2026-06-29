@@ -260,7 +260,8 @@ if page == "Dashboard":
 
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Companies Tracked", len(df_startups))
-    col2.metric("Job Matches", len(df_jobs))
+    _active_jobs = df_jobs[df_jobs["Status"].str.strip().str.lower() != "not interested"]
+    col2.metric("Job Matches", len(_active_jobs))
     interested = len(df_startups[df_startups["Status"].str.lower() == "interested"])
     col3.metric("Interested", interested)
     wishlisted = len(df_startups[df_startups["Status"].str.lower() == "wishlist"])

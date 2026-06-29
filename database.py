@@ -62,6 +62,16 @@ def init_db() -> None:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_company_role
                 ON job_matches(company_name COLLATE NOCASE, role_title COLLATE NOCASE);
 
+            -- Tombstones for jobs the user has deleted. Any automated source
+            -- (local pipeline or cloud sync) must skip re-adding these, so a
+            -- manual deletion stays deleted across runs.
+            CREATE TABLE IF NOT EXISTS deleted_jobs (
+                company_name TEXT NOT NULL,
+                role_title TEXT DEFAULT '',
+                deleted_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (company_name COLLATE NOCASE, role_title COLLATE NOCASE)
+            );
+
             CREATE TABLE IF NOT EXISTS connections (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 first_name TEXT DEFAULT '',
@@ -151,6 +161,40 @@ def get_existing_job_keys() -> set[str]:
         conn.close()
 
 
+def _job_key(company_name: str, role_title: str) -> str:
+    return f"{(company_name or '').lower().strip()}|{(role_title or '').lower().strip()}"
+
+
+def get_deleted_job_keys() -> set[str]:
+    """Tombstoned (company|role) keys — jobs the user has deleted.
+
+    Same key format as :func:`get_existing_job_keys`, so callers can filter
+    with a single ``key in tombstones`` check before inserting.
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute("SELECT company_name, role_title FROM deleted_jobs").fetchall()
+        return {_job_key(r[0], r[1]) for r in rows}
+    finally:
+        conn.close()
+
+
+def add_job_tombstones(pairs: list[tuple[str, str]]) -> int:
+    """Record (company_name, role_title) pairs as deleted. Returns count added."""
+    if not pairs:
+        return 0
+    conn = _connect()
+    try:
+        cur = conn.executemany(
+            "INSERT OR IGNORE INTO deleted_jobs (company_name, role_title) VALUES (?, ?)",
+            pairs,
+        )
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
 def is_processed(source: str, item_id: str) -> bool:
     conn = _connect()
     try:
@@ -219,6 +263,7 @@ def insert_startups(startups: list) -> int:
 def insert_job_matches(jobs: list) -> int:
     if not jobs:
         return 0
+    tombstoned = get_deleted_job_keys()
     conn = _connect()
     count = 0
     try:
@@ -237,6 +282,9 @@ def insert_job_matches(jobs: list) -> int:
                     j.get("source", ""), j.get("status", ""),
                     j.get("date_found", datetime.now().strftime("%Y-%m-%d")),
                 )
+            # values[0] = company_name, values[2] = role_title for both branches
+            if _job_key(values[0], values[2]) in tombstoned:
+                continue
             try:
                 conn.execute(
                     """INSERT INTO job_matches
@@ -367,6 +415,11 @@ def delete_job_match(company_name: str, role_title: str) -> None:
     try:
         conn.execute(
             "DELETE FROM job_matches WHERE company_name = ? COLLATE NOCASE AND role_title = ? COLLATE NOCASE",
+            (company_name, role_title),
+        )
+        # Tombstone it so the pipeline / cloud sync never resurrects it.
+        conn.execute(
+            "INSERT OR IGNORE INTO deleted_jobs (company_name, role_title) VALUES (?, ?)",
             (company_name, role_title),
         )
         conn.commit()

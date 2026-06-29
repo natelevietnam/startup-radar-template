@@ -32,6 +32,23 @@ def _stage_rank(stage: str) -> int:
     return -1
 
 
+def _excluded_company_patterns(targets: dict) -> list:
+    """Compile word-boundary patterns for `excluded_companies` config.
+
+    Word boundaries avoid false positives (e.g. 'stripe' won't match
+    'Pinstripe') while still catching 'Allstate Insurance', 'Stripe, Inc.'
+    """
+    names = [c.lower().strip() for c in targets.get("excluded_companies", []) if c.strip()]
+    return [re.compile(r"\b" + re.escape(n) + r"\b") for n in names]
+
+
+def _company_excluded(company_name: str, patterns: list) -> bool:
+    if not company_name or not patterns:
+        return False
+    name = company_name.lower()
+    return any(p.search(name) for p in patterns)
+
+
 def _parse_amount_musd(amount: str) -> float:
     if not amount:
         return 0.0
@@ -55,10 +72,12 @@ class StartupFilter:
         self._ind_patterns = [
             re.compile(r"\b" + re.escape(k) + r"\b") for k in self.industries
         ]
+        self._excl_co_patterns = _excluded_company_patterns(targets)
 
     def passes(self, s: Startup) -> bool:
         return (
-            self._stage_ok(s.funding_stage, s.amount_raised)
+            not _company_excluded(s.company_name, self._excl_co_patterns)
+            and self._stage_ok(s.funding_stage, s.amount_raised)
             and self._location_ok(s.location)
             and self._industry_ok(s)
         )
@@ -99,6 +118,10 @@ class JobFilter:
         self.roles = [r.lower() for r in targets.get("roles", [])]
         self.exclusions = [e.lower() for e in targets.get("seniority_exclusions", [])]
         self.locations = [loc.lower() for loc in targets.get("locations", [])]
+        self._excl_co_patterns = _excluded_company_patterns(targets)
+
+    def company_excluded(self, company_name: str) -> bool:
+        return _company_excluded(company_name, self._excl_co_patterns)
 
     def role_matches(self, title: str) -> bool:
         if not title:
@@ -132,7 +155,11 @@ class JobFilter:
         return any(loc in lower for loc in self.locations)
 
     def passes(self, j: JobMatch) -> bool:
-        return self.role_matches(j.role_title) and self.location_matches(j.location)
+        return (
+            not self.company_excluded(j.company_name)
+            and self.role_matches(j.role_title)
+            and self.location_matches(j.location)
+        )
 
     def filter(self, jobs: list[JobMatch]) -> list[JobMatch]:
         return [j for j in jobs if self.passes(j)]

@@ -25,10 +25,22 @@ from pathlib import Path
 
 import re
 
+from filters import _company_excluded, _excluded_company_patterns
+
 REPO_DIR = Path(__file__).parent
 LOCAL_DB = REPO_DIR / "startup_radar.db"
 WORKFLOW = "daily.yml"
 ARTIFACT_NAME = "startup-radar-db"
+
+
+def _excluded_company_patterns_from_config() -> list:
+    """Compiled excluded-company patterns from config.yaml (empty on any error)."""
+    try:
+        from config_loader import load_config
+        targets = (load_config() or {}).get("targets", {}) or {}
+        return _excluded_company_patterns(targets)
+    except Exception:
+        return []
 
 # Tables produced by the daily pipeline — safe to merge from cloud.
 PIPELINE_TABLES = ("startups", "job_matches", "processed_items")
@@ -96,21 +108,58 @@ def _column_names(conn: sqlite3.Connection, table: str) -> list[str]:
     return [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
 
 
-def _merge_table(cloud: sqlite3.Connection, local: sqlite3.Connection, table: str) -> tuple[int, int]:
-    """Copy rows from cloud → local. Returns (inserted, skipped_duplicates)."""
+def _job_tombstones(local: sqlite3.Connection) -> set[tuple[str, str]]:
+    """(company, role) keys the user has deleted locally — never re-add these.
+
+    Lower/stripped so matching is case- and whitespace-insensitive, mirroring
+    the COLLATE NOCASE unique index on job_matches.
+    """
+    has_table = local.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='deleted_jobs'"
+    ).fetchone()
+    if not has_table:
+        return set()
+    return {
+        ((c or "").lower().strip(), (r or "").lower().strip())
+        for c, r in local.execute("SELECT company_name, role_title FROM deleted_jobs")
+    }
+
+
+def _merge_table(cloud: sqlite3.Connection, local: sqlite3.Connection, table: str,
+                 tombstones: set[tuple[str, str]] | None = None,
+                 excl_co_patterns: list | None = None) -> tuple[int, int, int]:
+    """Copy rows from cloud → local. Returns (inserted, skipped_duplicates, blocked).
+
+    ``blocked`` counts rows skipped because they were deleted locally
+    (tombstoned) or belong to an excluded company.
+    """
     cols = _column_names(cloud, table)
     if not cols:
-        return (0, 0)
+        return (0, 0, 0)
     insertable = [c for c in cols if c != "id"]
     placeholders = ",".join("?" * len(insertable))
     col_list = ",".join(insertable)
+
+    # Locate key columns for tombstone / excluded-company filtering.
+    ci = insertable.index("company_name") if "company_name" in insertable else None
+    ri = insertable.index("role_title") if "role_title" in insertable else None
+    can_tombstone = tombstones is not None and ci is not None and ri is not None
+    can_exclude_co = bool(excl_co_patterns) and ci is not None
 
     rows = cloud.execute(
         f"SELECT {col_list} FROM {table}"
     ).fetchall()
 
-    inserted = skipped = 0
+    inserted = skipped = blocked = 0
     for row in rows:
+        if can_exclude_co and _company_excluded(row[ci] or "", excl_co_patterns):
+            blocked += 1
+            continue
+        if can_tombstone:
+            key = ((row[ci] or "").lower().strip(), (row[ri] or "").lower().strip())
+            if key in tombstones:
+                blocked += 1
+                continue
         try:
             local.execute(
                 f"INSERT INTO {table} ({col_list}) VALUES ({placeholders})",
@@ -120,7 +169,7 @@ def _merge_table(cloud: sqlite3.Connection, local: sqlite3.Connection, table: st
         except sqlite3.IntegrityError:
             skipped += 1
     local.commit()
-    return inserted, skipped
+    return inserted, skipped, blocked
 
 
 def main() -> int:
@@ -144,9 +193,19 @@ def main() -> int:
         cloud = sqlite3.connect(cloud_db)
         local = sqlite3.connect(LOCAL_DB)
         try:
+            tombstones = _job_tombstones(local)
+            excl_co = _excluded_company_patterns_from_config()
             for table in PIPELINE_TABLES:
-                inserted, skipped = _merge_table(cloud, local, table)
-                print(f"  {table}: +{inserted} new, {skipped} already present")
+                is_jobs = table == "job_matches"
+                inserted, skipped, blocked = _merge_table(
+                    cloud, local, table,
+                    tombstones=tombstones if is_jobs else None,
+                    excl_co_patterns=excl_co if is_jobs else None,
+                )
+                msg = f"  {table}: +{inserted} new, {skipped} already present"
+                if blocked:
+                    msg += f", {blocked} skipped (deleted locally / excluded company)"
+                print(msg)
         finally:
             cloud.close()
             local.close()

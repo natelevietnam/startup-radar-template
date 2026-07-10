@@ -5,6 +5,7 @@ credentials.json
 token.json
 *.env
 .env
+.secrets/
 
 # User data
 *.db

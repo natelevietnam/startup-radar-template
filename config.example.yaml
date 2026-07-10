@@ -98,6 +98,25 @@ sources:
     # Senders to route to parsers. Add one per newsletter you subscribe to.
     senders: {}
 
+  # Optional — ApplyFYI curated company collections -> startups watchlist.
+  # No public API; the company list is parsed from the page's server-rendered
+  # RSC payload. Company-level only (no individual roles). List filtered URLs.
+  applyfyi:
+    enabled: false
+    urls:
+      - "https://www.applyfyi.com/companies?fn=pm"
+
+  # Optional — Work at a Startup (YC). AUTHENTICATED: needs your logged-in
+  # session cookie (HTTP 406 otherwise). Set env WAAS_COOKIE or drop the raw
+  # Cookie header into .secrets/waas_cookie.txt (gitignored). `query` is the
+  # querystring from your filtered board URL (everything after `companies?`).
+  # Cookies expire quickly — best run locally, not in the cloud cron.
+  workatastartup:
+    enabled: false
+    query: "role=product&remote=yes&minExperience=3&sortBy=created_desc"
+    product_only: true
+    location_filter: false
+
 # ---------------------------------------------------------------------------
 # Where to write results
 # ---------------------------------------------------------------------------

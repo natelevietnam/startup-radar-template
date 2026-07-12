@@ -117,6 +117,15 @@ sources:
     product_only: true
     location_filter: false
 
+  # Optional — WaaS inbound messages. YC companies that message you on Work at
+  # a Startup (from workatastartup@ycombinator.com) become warm leads in the
+  # Application Tracker ("In Progress" + the message logged as an activity).
+  # Requires the same Google OAuth as gmail. No job digest exists, so this is
+  # the useful WaaS email signal.
+  waas_messages:
+    enabled: false
+    lookback_days: 90
+
 # ---------------------------------------------------------------------------
 # Where to write results
 # ---------------------------------------------------------------------------

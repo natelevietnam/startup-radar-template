@@ -265,6 +265,23 @@ def run() -> int:
         except Exception as e:
             print(f"  Gmail jobs source failed: {e}")
 
+    # --- Optional: WaaS inbound messages (company DMs -> tracker leads) ---
+    waasmsg_cfg = sources_cfg.get("waas_messages", {})
+    if waasmsg_cfg.get("enabled"):
+        print("\n[WaaS Inbound] Fetching...")
+        try:
+            from sources import waas_messages
+            leads = waas_messages.fetch(waasmsg_cfg)
+            if leads:
+                print(f"  Logged {len(leads)} inbound lead(s) to the tracker:")
+                for l in leads:
+                    who = f"{l['contact_name']}" + (f" ({l['contact_title']})" if l['contact_title'] else "")
+                    print(f"    {l['company_name']} — {who}")
+            else:
+                print("  No new inbound messages")
+        except Exception as e:
+            print(f"  WaaS Inbound source failed: {e}")
+
     print(f"\nTotal extracted: {len(all_startups)}")
 
     # --- Filter ---

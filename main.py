@@ -94,6 +94,38 @@ def run() -> int:
         except Exception as e:
             print(f"  Gmail source failed: {e}")
 
+    # --- Optional: ApplyFYI (curated company directory -> startups watchlist) ---
+    afy_cfg = sources_cfg.get("applyfyi", {})
+    if afy_cfg.get("enabled"):
+        print("\n[ApplyFYI] Fetching...")
+        try:
+            from sources import applyfyi
+            from filters import JobFilter
+            companies = applyfyi.fetch(afy_cfg)
+            print(f"  {len(companies)} curated company(ies)")
+            if companies:
+                flt = JobFilter(cfg)  # reuse excluded_companies patterns
+                existing = database.get_existing_companies()
+                rejected = database.get_rejected_companies()
+                fresh = [
+                    c for c in companies
+                    if not flt.company_excluded(c.company_name)
+                    and c.company_name.lower().strip() not in existing
+                    and c.company_name.lower().strip() not in rejected
+                ]
+                if fresh:
+                    added = database.insert_startups(fresh)
+                    print(f"  Added {added} new company(ies) to watchlist")
+                    for c in fresh[:10]:
+                        stage = f" | {c.funding_stage}" if c.funding_stage else ""
+                        print(f"    {c.company_name}{stage}  [{c.location}]")
+                    if len(fresh) > 10:
+                        print(f"    ... and {len(fresh) - 10} more")
+                else:
+                    print("  No new companies to add")
+        except Exception as e:
+            print(f"  ApplyFYI source failed: {e}")
+
     # --- Optional: NewPMJobs.com (public PM job board API -> job_matches) ---
     npj_cfg = sources_cfg.get("newpmjobs", {})
     if npj_cfg.get("enabled"):
@@ -165,6 +197,42 @@ def run() -> int:
                     print("  No new jobs to add")
         except Exception as e:
             print(f"  Remote OK source failed: {e}")
+
+    # --- Optional: Work at a Startup / YC (authenticated -> job_matches) ---
+    waas_cfg = sources_cfg.get("workatastartup", {})
+    if waas_cfg.get("enabled"):
+        print("\n[WaaS] Fetching...")
+        try:
+            from sources import workatastartup
+            from filters import JobFilter
+            jobs = workatastartup.fetch(waas_cfg)
+            print(f"  {len(jobs)} PM role(s)")
+            flt = JobFilter(cfg)
+            _n = len(jobs)
+            jobs = [j for j in jobs if not flt.seniority_excluded(j.get("role_title", ""))]
+            if len(jobs) != _n:
+                print(f"  {len(jobs)} after seniority exclusion ({_n - len(jobs)} dropped)")
+            if jobs and waas_cfg.get("location_filter", False):
+                jobs = [j for j in jobs if flt.location_matches(j["location"])]
+                print(f"  {len(jobs)} after location filter")
+            if jobs:
+                existing_keys = database.get_existing_job_keys()
+                fresh = [
+                    j for j in jobs
+                    if f"{j['company_name'].lower().strip()}|{j['role_title'].lower().strip()}" not in existing_keys
+                ]
+                if fresh:
+                    added = database.insert_job_matches(fresh)
+                    print(f"  Added {added} new job(s) to SQLite")
+                    for j in fresh[:10]:
+                        loc = f" | {j['location'][:30]}" if j.get("location") else ""
+                        print(f"    {j['company_name']} | {j['role_title'][:50]}{loc}")
+                    if len(fresh) > 10:
+                        print(f"    ... and {len(fresh) - 10} more")
+                else:
+                    print("  No new jobs to add")
+        except Exception as e:
+            print(f"  WaaS source failed: {e}")
 
     # --- Optional: Gmail jobs (recruiter emails -> job_matches) ---
     jobs_cfg = sources_cfg.get("gmail_jobs", {})

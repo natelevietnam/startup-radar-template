@@ -504,6 +504,16 @@ elif page == "Companies":
 elif page == "Job Matches":
     st.title("Job Matches")
 
+    # PM-Fit dashboard: a fit-scored view of the Uncategorized roles below,
+    # regenerated from this DB each time Startup Radar is opened (see the
+    # startup-radar skill + generate_fit_artifact.py).
+    st.markdown(
+        "🎯 **[Open the PM-Fit Dashboard]"
+        "(https://claude.ai/code/artifact/209ec015-40c8-467f-9724-455cba7855aa)** "
+        "— founder/culture fit-scoring for the Uncategorized roles below. "
+        "Refreshes when you open Startup Radar."
+    )
+
     if st.button("+ Add Role", key="add_role_btn"):
         st.session_state["show_add_role"] = not st.session_state.get("show_add_role", False)
 
@@ -558,6 +568,16 @@ elif page == "Job Matches":
 
     display_cols = [c for c in filtered_jobs.columns if c != "Priority"]
 
+    # Recency: flag postings found within the last 30 days so fresh roles are
+    # obvious during triage (grids already sort Date Found DESC).
+    _recent_cutoff = (pd.Timestamp(TODAY) - pd.Timedelta(days=30)).strftime("%Y-%m-%d")
+
+    def _add_recency_col(frame):
+        frame = frame.copy()
+        recent = frame["Date Found"].fillna("").astype(str) >= _recent_cutoff
+        frame.insert(0, "\U0001f195", recent.map(lambda x: "\U0001f195" if x else ""))
+        return frame
+
     def _add_job_connections_col(frame):
         frame = frame.copy()
         if database.get_connections_count() == 0:
@@ -571,6 +591,7 @@ elif page == "Job Matches":
         "Status": st.column_config.SelectboxColumn("Status", options=STATUS_OPTIONS, width="medium"),
         "Link": st.column_config.LinkColumn("Link", display_text="Apply"),
         "Connections": st.column_config.TextColumn("Connections", width="medium"),
+        "\U0001f195": st.column_config.TextColumn("\U0001f195", width="small", help="Found in the last 30 days"),
         "\U0001f5d1\ufe0f": st.column_config.CheckboxColumn("\U0001f5d1\ufe0f", width="small"),
     }
 
@@ -653,7 +674,7 @@ elif page == "Job Matches":
         st.caption("Tick \U0001f5d1️ to select rows, then use the button below to "
                    "delete just those. With nothing ticked, the button clears the whole list.")
         edited = st.data_editor(
-            _add_delete_col(_add_job_connections_col(uncategorized_jobs[display_cols]), first=True),
+            _add_delete_col(_add_recency_col(_add_job_connections_col(uncategorized_jobs[display_cols])), first=True),
             column_config=_job_col_config, hide_index=True, use_container_width=True,
             disabled=[], key="unc_jobs_editor",
         )

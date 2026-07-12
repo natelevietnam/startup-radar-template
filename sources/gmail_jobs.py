@@ -109,8 +109,93 @@ def _parse_dgcsearch(body: str, subject: str, msg_url: str) -> list[dict]:
     return out
 
 
+_WF_EMPLOYEES_RE = re.compile(
+    r"^\s*(?P<company>.+?)\s*/\s*[\d,]+(?:-[\d,]+)?\+?\s*Employees\s*$",
+    re.MULTILINE,
+)
+_WF_URL_RE = re.compile(r"https://wellfound\.com/jobs\?job_listing_slug\S+")
+
+
+def _parse_wellfound(body: str, subject: str, msg_url: str) -> list[dict]:
+    """Parse Wellfound job-alert emails (team@hi.wellfound.com).
+
+    Plaintext layout, one block per role::
+
+        <Role Title>
+
+        <Company> / <NN-NN> Employees
+
+         $<min>–<max>k | <locations> | years of exp | <type>
+
+        <badges...>
+
+        Learn More
+        <https://wellfound.com/jobs?job_listing_slug=<id>-<slug>>
+
+    Anchor on the "<Company> / <N> Employees" line: the title is the nearest
+    preceding non-empty line, and the comp/location line + apply URL follow.
+    Salary is sometimes absent (line starts with " | <location> | ..."). The
+    plaintext mangles the apply URL's "=" into "D" (a quoted-printable
+    artifact); we restore it so the link resolves.
+    """
+    if not body:
+        return []
+    body = body.replace("\r\n", "\n")
+
+    out: list[dict] = []
+    matches = list(_WF_EMPLOYEES_RE.finditer(body))
+    for i, m in enumerate(matches):
+        company = m.group("company").strip().strip("*").strip()
+        if not company or "@" in company or len(company) > 60:
+            continue
+
+        # Title = last non-empty line before the employees line.
+        preceding = body[:m.start()].rstrip().splitlines()
+        role = ""
+        for line in reversed(preceding):
+            if line.strip():
+                role = line.strip()
+                break
+        if not role or len(role) > 90:
+            continue
+
+        # Search window: from this block up to the next role (or end).
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
+        window = body[m.end():end]
+
+        location, comp = "", ""
+        for line in window.splitlines():
+            if "years of exp" in line:
+                segs = [s.strip() for s in line.split("|")]
+                try:
+                    yi = next(k for k, s in enumerate(segs) if "years of exp" in s)
+                    if yi >= 1:
+                        location = segs[yi - 1]
+                except StopIteration:
+                    pass
+                comp = next((s for s in segs if "$" in s), "")
+                break
+
+        url_m = _WF_URL_RE.search(window)
+        url = url_m.group(0).replace("job_listing_slugD", "job_listing_slug=").rstrip(">") if url_m else msg_url
+
+        desc_bits = [b for b in (comp, m.group(0).split("/", 1)[-1].strip()) if b]
+        out.append({
+            "company_name": company,
+            "company_description": " • ".join(desc_bits),
+            "role_title": role,
+            "location": location,
+            "url": url,
+            "priority": "",
+            "status": "",
+            "source": "Wellfound",
+        })
+    return out
+
+
 PARSERS: dict[str, Callable[[str, str, str], list[dict]]] = {
     "dgcsearch": _parse_dgcsearch,
+    "wellfound": _parse_wellfound,
 }
 
 

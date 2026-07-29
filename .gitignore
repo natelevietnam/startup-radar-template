@@ -40,3 +40,6 @@ desktop.ini
 .idea/
 .vscode/
 *.swp
+
+# Migration backup bundles (contain secrets/DB)
+radar-migration-backup-*.tar.gz

@@ -1,0 +1,326 @@
+<title>PM Fit — Your Job Matches</title>
+<meta name="description" content="Live, fit-scored view of the Uncategorized roles in your Startup Radar Job Matches.">
+<style>
+  :root{
+    --ground:#F4F5F7; --surface:#FFFFFF; --ink:#14181E; --muted:#5C6675; --faint:#8A93A1;
+    --hair:#E5E8ED; --brand:#2C4A78; --brand-soft:#EAF0F8;
+    --t-strong:#157347; --t-lean:#2E7D5B; --t-poss:#B0791D; --t-weak:#C0612B; --t-pass:#A8403C; --t-pending:#7C8696;
+    --db-bg:#FBEBEA; --db-tx:#9B2F2C; --mh-bg:#E7F3EC; --mh-tx:#1B6A42;
+    --nu-bg:#EEF1F5; --nu-tx:#455064;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono","SFMono-Regular",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);line-height:1.5;
+    -webkit-font-smoothing:antialiased;font-size:15px}
+  a{color:var(--brand);text-decoration:none}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 20px}
+  .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .eyebrow{font-family:var(--mono);text-transform:uppercase;letter-spacing:.12em;font-size:11px;color:var(--faint)}
+
+  header.top{background:var(--surface);border-bottom:1px solid var(--hair);padding:34px 0 26px}
+  header.top h1{font-size:30px;line-height:1.1;margin:.35em 0 .15em;letter-spacing:-.02em;text-wrap:balance}
+  header.top p.sub{margin:0;color:var(--muted);max-width:64ch}
+  .meta-row{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:14px;font-size:12.5px;color:var(--muted)}
+  .meta-row b{color:var(--ink);font-weight:600}
+
+  .crit{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:22px}
+  @media(max-width:720px){.crit{grid-template-columns:1fr}}
+  .crit .box{background:var(--ground);border:1px solid var(--hair);border-radius:10px;padding:14px 16px}
+  .crit h3{font-size:12px;margin:0 0 10px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.1em}
+  .crit.db h3{color:var(--t-pass)} .crit.mh h3{color:var(--t-strong)}
+  .chiplist{display:flex;flex-wrap:wrap;gap:6px}
+  .mini{font-size:11.5px;padding:3px 8px;border-radius:20px;border:1px solid var(--hair);background:#fff;color:var(--nu-tx)}
+
+  section.band{padding:30px 0}
+  h2.sec{font-size:13px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.12em;color:var(--brand);
+    margin:0 0 16px;padding-bottom:8px;border-bottom:2px solid var(--brand-soft)}
+
+  .findings{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+  @media(max-width:720px){.findings{grid-template-columns:1fr}}
+  .finding{background:var(--surface);border:1px solid var(--hair);border-radius:10px;padding:16px 18px}
+  .finding h4{margin:0 0 6px;font-size:14.5px}
+  .finding p{margin:0;font-size:13.5px;color:var(--muted)}
+
+  /* legend */
+  .legend{display:flex;flex-wrap:wrap;gap:14px;margin:0 0 20px;font-size:12.5px;color:var(--muted)}
+  .legend .lg{display:flex;align-items:center;gap:7px}
+  .dot{width:11px;height:11px;border-radius:3px;display:inline-block}
+
+  /* controls */
+  .controls{position:sticky;top:0;z-index:20;background:rgba(244,245,247,.92);backdrop-filter:blur(8px);
+    border-bottom:1px solid var(--hair);padding:12px 0;margin-bottom:4px}
+  .controls .inner{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+  .filters{display:flex;flex-wrap:wrap;gap:6px}
+  .fbtn{font-family:var(--mono);font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;
+    padding:6px 11px;border-radius:7px;border:1px solid var(--hair);background:#fff;color:var(--muted);cursor:pointer}
+  .fbtn[aria-pressed="true"]{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .fbtn:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+  #q{margin-left:auto;flex:1;min-width:180px;max-width:300px;padding:7px 11px;border:1px solid var(--hair);
+    border-radius:7px;font-size:13px;font-family:var(--sans);background:#fff}
+  #q:focus-visible{outline:2px solid var(--brand);outline-offset:1px}
+  .count{font-size:12px;color:var(--faint);font-family:var(--mono)}
+
+  /* master table */
+  .tablewrap{overflow-x:auto;border:1px solid var(--hair);border-radius:10px;background:var(--surface)}
+  table.master{border-collapse:collapse;width:100%;font-size:13px;min-width:680px}
+  table.master th,table.master td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--hair);vertical-align:middle}
+  table.master th{font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint);font-weight:600}
+  table.master tr:last-child td{border-bottom:none}
+  table.master td.rk{color:var(--faint);font-family:var(--mono);width:30px}
+  table.master td.co{font-weight:600;white-space:nowrap}
+  table.master td.sc{font-family:var(--mono);font-weight:600;width:42px;text-align:right}
+  .vpill{font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;
+    padding:3px 8px;border-radius:20px;white-space:nowrap;color:#fff}
+  .y{color:var(--t-strong);font-weight:600} .n{color:var(--t-pass);font-weight:600} .rsk{color:var(--t-weak);font-weight:600}
+
+  /* cards */
+  #cards{display:flex;flex-direction:column;gap:16px}
+  .card{background:var(--surface);border:1px solid var(--hair);border-radius:12px;overflow:hidden;
+    display:grid;grid-template-columns:6px 1fr}
+  .stripe{width:6px}
+  .cbody{padding:18px 20px 20px}
+  .chead{display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap}
+  .chead .rank{font-family:var(--mono);font-size:12px;color:var(--faint);padding-top:5px}
+  .chead .name{font-size:19px;font-weight:700;letter-spacing:-.01em}
+  .chead .role{color:var(--muted);font-size:13.5px;margin-top:1px}
+  .scorebox{margin-left:auto;text-align:right;min-width:120px}
+  .scorebox .num{font-family:var(--mono);font-size:26px;font-weight:700;line-height:1}
+  .scorebox .num small{font-size:13px;color:var(--faint);font-weight:500}
+  .bar{height:5px;border-radius:3px;background:#ECEEF1;margin-top:6px;overflow:hidden}
+  .bar > i{display:block;height:100%;border-radius:3px}
+  .vpill.big{display:inline-block;margin-top:7px}
+
+  .snap{display:flex;flex-wrap:wrap;gap:6px;margin:14px 0 4px}
+  .snap .s{font-size:11.5px;font-family:var(--mono);padding:3px 8px;border-radius:6px;background:var(--nu-bg);color:var(--nu-tx)}
+  .snap .s b{color:var(--ink)}
+
+  .line{margin:12px 0;font-size:13.5px;max-width:82ch}
+  .line .k{font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint);display:block;margin-bottom:2px}
+
+  .dims{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:14px 0}
+  @media(max-width:680px){.dims{grid-template-columns:1fr}}
+  .dim{font-size:13px;background:var(--ground);border:1px solid var(--hair);border-radius:8px;padding:9px 11px}
+  .dim .dh{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:3px}
+  .dim .dk{font-weight:700;font-size:10.5px;color:var(--brand);font-family:var(--mono);text-transform:uppercase;letter-spacing:.05em}
+  .dim .dv{color:var(--ink);line-height:1.45}
+  .cf{font-family:var(--mono);font-size:9.5px;padding:1px 6px;border-radius:20px;background:#fff;border:1px solid var(--hair);color:var(--nu-tx);white-space:nowrap;flex:none}
+
+  .tags{margin:10px 0}
+  .tags .lbl{font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint);margin-bottom:5px;display:block}
+  .tag{display:inline-block;font-size:12px;padding:4px 9px;border-radius:6px;margin:0 5px 5px 0;line-height:1.35}
+  .tag.db{background:var(--db-bg);color:var(--db-tx)}
+  .tag.mh{background:var(--mh-bg);color:var(--mh-tx)}
+  ul.pl{margin:5px 0 0;padding-left:18px;font-size:13px;color:var(--muted);max-width:84ch}
+  ul.pl li{margin:3px 0}
+  .verify{background:var(--brand-soft);border-radius:8px;padding:11px 14px;margin-top:12px}
+  .verify .lbl{color:var(--brand)}
+  .conf{font-size:11.5px;color:var(--faint);margin-top:10px;font-family:var(--mono)}
+  .conn{font-size:12.5px;color:var(--muted);margin-top:4px}
+  .conn b{color:var(--ink)}
+  .orole{display:inline-block;font-size:11.5px;font-family:var(--mono);background:var(--brand-soft);color:var(--brand);padding:2px 8px;border-radius:6px;margin:0 6px 3px 0}
+  .line a{color:var(--brand);font-weight:600;white-space:nowrap}
+
+  footer{padding:30px 0 50px;color:var(--faint);font-size:12px;border-top:1px solid var(--hair);margin-top:24px}
+  .dropped{background:#fff;border:1px dashed var(--hair);border-radius:10px;padding:14px 16px;font-size:13px;color:var(--muted)}
+</style>
+
+<header class="top">
+  <div class="wrap">
+    <div class="eyebrow">Career-fit triage · Product Management</div>
+    <h1>PM Fit — Your Job Matches</h1>
+    <p class="sub">Live view of your <b>Startup Radar — Uncategorized Job Matches</b>, scored against your deal-breakers and must-haves: founder/operating style, likely hiring manager, and public signal per company. Regenerates from your pipeline each time you open the dashboard.</p>
+    <div class="meta-row">
+      <span>Generated <b>{{GENERATED_AT}}</b> from your local DB</span>
+      <span>{{COUNTS}}</span>
+      <span>Scores are directional — <b>team &gt;&gt; company</b>; verify the specific role</span>
+    </div>
+
+    <div class="crit">
+      <div class="box db">
+        <h3>Deal-breakers (walk away)</h3>
+        <div class="chiplist">
+          <span class="mini">PM = execution layer under eng</span>
+          <span class="mini">Micromanaged inputs/hours</span>
+          <span class="mini">No customer access</span>
+          <span class="mini">Process-heavy / slow</span>
+          <span class="mini">AI as buzzword / no tooling</span>
+          <span class="mini">Low-trust / opaque</span>
+          <span class="mini">No E-Verify / STEM-OPT</span>
+          <span class="mini">Base &lt; ~$150K</span>
+        </div>
+      </div>
+      <div class="box mh">
+        <h3>Must-haves (optimizing for)</h3>
+        <div class="chiplist">
+          <span class="mini">End-to-end ownership</span>
+          <span class="mini">Genuinely AI-native (product + workflow)</span>
+          <span class="mini">Close to customer &amp; revenue</span>
+          <span class="mini">Real product mentor</span>
+          <span class="mini">Fast, low-process, intense</span>
+          <span class="mini">Honest, high-trust, transparent</span>
+          <span class="mini">Autonomy-trusting leadership</span>
+          <span class="mini">Series B–D / ~50–100+ · SF-friendly</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<section class="band"><div class="wrap">
+  <h2 class="sec">What the whole set tells you</h2>
+  <div class="findings" id="findings"></div>
+</div></section>
+
+<div class="controls"><div class="wrap inner">
+  <div class="filters" id="filters">
+    <button class="fbtn" data-f="all" aria-pressed="true">All</button>
+    <button class="fbtn" data-f="strong">Strong 80+</button>
+    <button class="fbtn" data-f="lean">70–79</button>
+    <button class="fbtn" data-f="poss">55–69</button>
+    <button class="fbtn" data-f="weak">45–54</button>
+    <button class="fbtn" data-f="pass">&lt;45</button>
+    <button class="fbtn" data-f="pending">New / not researched</button>
+  </div>
+  <input id="q" type="search" placeholder="Filter by company, role, or keyword…" aria-label="Filter companies">
+  <span class="count" id="count"></span>
+</div></div>
+
+<section class="band" style="padding-top:22px"><div class="wrap">
+  <h2 class="sec">Ranked overview</h2>
+  <div class="legend" id="legend"></div>
+  <div class="tablewrap"><table class="master"><thead><tr>
+    <th>#</th><th>Company</th><th>Role</th><th style="text-align:right">Score</th><th>Verdict</th><th>Location</th><th>$150K base</th><th>Headline read</th>
+  </tr></thead><tbody id="mbody"></tbody></table></div>
+</div></section>
+
+<section class="band" style="padding-top:8px"><div class="wrap">
+  <h2 class="sec">Full dossiers</h2>
+  <div id="cards"></div>
+  <div class="dropped" style="margin-top:18px">
+    {{GATE_NOTE}}
+  </div>
+</div></section>
+
+<footer><div class="wrap">
+  Predictions are inferences from public signal and may be wrong — each card lists what to verify. The single most common unknown across the set is <b>E-Verify enrollment / STEM-OPT support</b>; confirm it directly before investing in any process. Scores reflect fit to <i>your</i> stated criteria, not company quality.
+</div></footer>
+
+<script>
+const TIER = {
+  strong:{lo:80,c:"var(--t-strong)",label:"Strong fit"},
+  lean:{lo:70,c:"var(--t-lean)",label:"Possible–strong"},
+  poss:{lo:55,c:"var(--t-poss)",label:"Possible"},
+  weak:{lo:45,c:"var(--t-weak)",label:"Weak"},
+  pass:{lo:0,c:"var(--t-pass)",label:"Likely pass"},
+  pending:{lo:-1,c:"var(--t-pending)",label:"Not yet researched"}
+};
+function tierOf(d){const s=(d&&typeof d==='object')?(d.pending?null:d.score):d;if(s==null)return"pending";return s>=80?"strong":s>=70?"lean":s>=55?"poss":s>=45?"weak":"pass";}
+
+const FINDINGS = [
+  {h:"With Ramp & Anthropic applied, Mercury tops the board",p:"After your applications drop off, the strongest remaining fit is Mercury's founding-team open call (80) — profitable, genuinely AI-native, remote-first and humane by design. Behind it: Decagon (78), Glean (74), Vanta (72), then Substack and Brex (70). The recurring tax is still intensity — verify the Sunday-evening test before believing any paper score."},
+  {h:"Several 'new' pipeline entries are mid-deal or distressed",p:"Diligence the corporate status first: Brex is now a Capital One subsidiary (deal closed Apr 2026), Common Room is being acquired by Zoom (announced Jul 2026, its Integrations-PM req looks pulled), and 23andMe is in Chapter 11. Ownership, equity and roadmap can evaporate — confirm the seat is real and funded."},
+  {h:"E-Verify / STEM-OPT is still the universal blind spot",p:"Unconfirmed for nearly every private company here — and newly at-risk for small shops (Bluesky, Common Room). Big public sponsors are safer (Stripe, Instacart/Maplebear, Snap, Unity all file H-1Bs). PrizePicks explicitly will NOT sponsor. Make it your first screening question everywhere."},
+  {h:"At the big public cos, team ≫ company — and six are quick passes",p:"Stripe, Instacart, Snap, Unity, GitLab all swing from great to grim by team; pin the hiring manager and charter before believing the score. Screened out with a one-line reason: Honeywell (NY-only), AbbVie (pharma QA, not a software PM role), TMEIC & Samsung (industrial/adtech), FourKites (logistics), 23andMe (bankruptcy)."}
+];
+
+const DATA = [ /*DATA*/ ];
+
+/* ---- render ---- */
+function vpill(t,big){const o=TIER[t];return `<span class="vpill${big?' big':''}" style="background:${o.c}">${o.label}</span>`;}
+function clearsCell(c){if(c==='Y')return '<span class="y">Yes</span>';if(c==='N')return '<span class="n">No</span>';return '<span class="rsk">'+c+'</span>';}
+
+function renderFindings(){
+  document.getElementById('findings').innerHTML = FINDINGS.map(f=>
+    `<div class="finding"><h4>${f.h}</h4><p>${f.p}</p></div>`).join('');
+}
+function renderLegend(){
+  document.getElementById('legend').innerHTML = Object.keys(TIER).map(k=>{
+    const n=DATA.filter(d=>tierOf(d)===k).length;
+    return `<span class="lg"><span class="dot" style="background:${TIER[k].c}"></span>${TIER[k].label} <b class="mono">&nbsp;${n}</b></span>`;
+  }).join('');
+}
+function renderMaster(rows){
+  document.getElementById('mbody').innerHTML = rows.map(d=>{
+    const t=tierOf(d),c=TIER[t].c;
+    return `<tr><td class="rk">${d._rank??'—'}</td><td class="co">${d.co}</td><td>${d.role}</td>
+      <td class="sc" style="color:${c}">${d.pending?'—':(d.scoreLabel||d.score)}</td>
+      <td>${vpill(t)}</td><td>${d.locShort}</td><td>${clearsCell(d.clears)}</td>
+      <td style="color:var(--muted);font-size:12.5px">${d.headline}</td></tr>`;
+  }).join('');
+}
+function dimRow(label,txt){
+  let cf='',body=String(txt).trim();
+  const m=body.match(/\(([^()]*)\)\s*$/);          // grab the final trailing parenthetical as the confidence note
+  if(m){cf=`<span class="cf">${m[1]}</span>`;body=body.slice(0,m.index).trim().replace(/[—·,;\s]+$/,'');}
+  return `<div class="dim"><div class="dh"><span class="dk">${label}</span>${cf}</div><div class="dv">${body}</div></div>`;
+}
+function renderCards(rows){
+  document.getElementById('cards').innerHTML = rows.map(d=>{
+    const t=tierOf(d),c=TIER[t].c;
+    const openRoles = (d.openRoles&&d.openRoles.length)
+      ? `<div class="line"><span class="k">Open now (Uncategorized)</span>${d.openRoles.map(r=>`<span class="orole">${r}</span>`).join('')}</div>` : '';
+    const head = `<div class="chead">
+          <span class="rank">#${d._rank??'—'}</span>
+          <div><div class="name">${d.co}</div><div class="role">${d.role}</div></div>
+          <div class="scorebox"><div class="num" style="color:${c}">${d.pending?'—':d.score}${d.pending?'':'<small>/100</small>'}</div>
+            ${d.pending?'':`<div class="bar"><i style="width:${d.score}%;background:${c}"></i></div>`}
+            ${vpill(t,true)}</div>
+        </div>`;
+    if(d.pending){
+      return `<div class="card" data-tier="${t}" data-s="${d.search}">
+      <div class="stripe" style="background:${c}"></div>
+      <div class="cbody">${head}
+        <div class="snap">${d.snap.map(s=>`<span class="s">${s}</span>`).join('')}</div>
+        ${openRoles}
+        <div class="line"><span class="k">Status</span>${d.headline}${d.url?` &nbsp;<a href="${d.url}" target="_blank" rel="noopener">View posting →</a>`:''}</div>
+        ${(d.flags&&d.flags.length)?`<div class="tags"><span class="lbl">Quick gate flags</span>${d.flags.map(x=>`<span class="tag db">${x}</span>`).join('')}</div>`:''}
+        <div class="conf">Not yet deep-researched — run a deep-dive to score this company against your criteria.</div>
+      </div></div>`;
+    }
+    const dims=d.dims||{};
+    return `<div class="card" data-tier="${t}" data-s="${d.search}">
+      <div class="stripe" style="background:${c}"></div>
+      <div class="cbody">${head}
+        <div class="snap">${d.snap.map(s=>`<span class="s">${s}</span>`).join('')}</div>
+        ${openRoles}
+        <div class="line"><span class="k">Founder / operating style</span>${d.founder}</div>
+        <div class="line"><span class="k">Likely hiring manager / product org</span>${d.hm}
+          ${d.conn?`<div class="conn">${d.conn}</div>`:''}</div>
+        <div class="dims">
+          ${dimRow('Autonomy',dims.aut)}${dimRow('Decisions',dims.dec)}
+          ${dimRow('Pace',dims.pace)}${dimRow('Conflict/feedback',dims.con)}
+          ${dimRow('Transparency',dims.tra)}${dimRow('AI-native',dims.ai)}
+        </div>
+        ${(d.breakers&&d.breakers.length)?`<div class="tags"><span class="lbl">Deal-breakers tripped / at risk</span>${d.breakers.map(x=>`<span class="tag db">${x}</span>`).join('')}</div>`:''}
+        ${(d.musts&&d.musts.length)?`<div class="tags"><span class="lbl">Must-haves hit</span>${d.musts.map(x=>`<span class="tag mh">${x}</span>`).join('')}</div>`:''}
+        ${(d.flags&&d.flags.length)?`<div class="tags"><span class="lbl">Red flags</span><ul class="pl">${d.flags.map(x=>`<li>${x}</li>`).join('')}</ul></div>`:''}
+        ${(d.verify&&d.verify.length)?`<div class="verify"><span class="lbl">Verify before pursuing</span><ul class="pl">${d.verify.map(x=>`<li>${x}</li>`).join('')}</ul></div>`:''}
+        <div class="conf">Confidence: ${d.conf||'—'}</div>
+      </div></div>`;
+  }).join('');
+}
+
+let curFilter='all',curQ='';
+function apply(){
+  let rows=DATA.slice().sort((a,b)=>(b.pending?-1:b.score)-(a.pending?-1:a.score));
+  let n=0; rows.forEach(d=>{ d._rank = d.pending? null : (++n); });
+  let view=rows.filter(d=>{
+    const okF = curFilter==='all'||tierOf(d)===curFilter;
+    const okQ = !curQ||d.search.includes(curQ);
+    return okF&&okQ;
+  });
+  renderMaster(view); renderCards(view);
+  document.getElementById('count').textContent = view.length+' / '+DATA.length+' shown';
+}
+function boot(){
+  DATA.forEach(d=>{d.search=(d.co+' '+(d.role||'')+' '+((d.openRoles||[]).join(' '))+' '+(d.headline||'')+' '+(d.search0||'')+' '+(d.founder||'')).toLowerCase();});
+  renderFindings(); renderLegend(); apply();
+  document.querySelectorAll('.fbtn').forEach(b=>b.addEventListener('click',()=>{
+    document.querySelectorAll('.fbtn').forEach(x=>x.setAttribute('aria-pressed','false'));
+    b.setAttribute('aria-pressed','true'); curFilter=b.dataset.f; apply();
+  }));
+  document.getElementById('q').addEventListener('input',e=>{curQ=e.target.value.trim().toLowerCase();apply();});
+}
+boot();
+</script>

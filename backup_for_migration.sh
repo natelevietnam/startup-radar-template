@@ -33,6 +33,14 @@ done
 # --- also drop a copy of the runbook in the bundle ---
 [ -e MIGRATION_RUNBOOK.md ] && cp MIGRATION_RUNBOOK.md "$STAGE/MIGRATION_RUNBOOK.md"
 
+# --- self-contained offline copy of the whole repo (code + full history) ---
+# Clone it on the new machine with zero GitHub dependency:
+#   git clone startup-radar-repo.bundle startup-radar-template
+if git rev-parse --git-dir >/dev/null 2>&1; then
+  git bundle create "$STAGE/startup-radar-repo.bundle" --all >/dev/null 2>&1 \
+    && echo "  + startup-radar-repo.bundle (offline-clonable full repo)"
+fi
+
 tar czf "$OUT" -C "$(dirname "$STAGE")" "$(basename "$STAGE")"
 rm -rf "$(dirname "$STAGE")"
 echo

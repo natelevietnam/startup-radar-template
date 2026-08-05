@@ -295,10 +295,91 @@ def _parse_linkedin_jobalerts(body: str, subject: str, msg_url: str) -> list[dic
     return out
 
 
+# --- Jobright.ai alerts (noreply@jobright.ai) -------------------------------
+
+
+def _parse_jobright(body: str, subject: str, msg_url: str) -> list[dict]:
+    """Parse Jobright.ai job alerts (noreply@jobright.ai).
+
+    These are HTML-only (no text/plain part), but the markup is genuinely
+    structured: one ``id="job-container"`` per role, holding
+
+        job-company-name        "The New York Times"
+        job-company-categories  "Digital Media · Late Stage"
+        job-title               "Senior Product Manager, Platforms"
+        job-match-percentage    "84 %"
+        job-tag (repeated)      "$144K/yr - $165K/yr" | "New York, NY" | "5+ referrals"
+
+    We read the DOM rather than regexing the flattened text: in flat text the
+    company/industry boundary is genuinely ambiguous ("The New York Times
+    Digital Media · Late Stage"), and separating them would need a hardcoded
+    industry vocabulary that breaks on every new industry Jobright adds.
+
+    The ids repeat within one document — invalid HTML, but normal for email —
+    so we scope every lookup to its own container.
+
+    Tag order varies (salary is often absent), so tags are classified by shape
+    rather than position. The apply URL keeps only the canonical
+    ``/jobs/info/<id>`` path so a posting dedupes across digests.
+    """
+    if not body:
+        return []
+    from bs4 import BeautifulSoup
+
+    from sources.newpmjobs import is_product_role
+
+    soup = BeautifulSoup(body, "html.parser")
+    out: list[dict] = []
+    seen: set[str] = set()
+
+    for cont in soup.find_all(id="job-container"):
+        def _txt(key: str) -> str:
+            el = cont.find(id=key)
+            return el.get_text(" ", strip=True) if el else ""
+
+        company = _txt("job-company-name").strip()
+        role = _txt("job-title").strip()
+        if not company or not role or len(company) > 60 or len(role) > 90:
+            continue
+        if not is_product_role(role):
+            continue
+
+        tags = [t.get_text(" ", strip=True) for t in cont.find_all(id="job-tag")]
+        comp = next((t for t in tags if t.startswith("$")), "")
+        location = next(
+            (t for t in tags if not t.startswith("$") and "referral" not in t.lower()),
+            "",
+        )
+
+        anchor = cont.find("a", href=True)
+        url = anchor["href"].split("?")[0] if anchor else msg_url
+        jid = url.rstrip("/").rsplit("/", 1)[-1]
+        if jid in seen:
+            continue
+        seen.add(jid)
+
+        # "Digital Media · Late Stage" plus salary and Jobright's match score —
+        # the score is their fit estimate, not ours, so it stays descriptive.
+        bits = [b for b in (comp, _txt("job-company-categories"),
+                            _txt("job-match-percentage").replace(" ", "")) if b]
+        out.append({
+            "company_name": company,
+            "company_description": " • ".join(bits),
+            "role_title": role,
+            "location": location,
+            "url": url,
+            "priority": "",
+            "status": "",
+            "source": "Jobright",
+        })
+    return out
+
+
 PARSERS: dict[str, Callable[[str, str, str], list[dict]]] = {
     "dgcsearch": _parse_dgcsearch,
     "wellfound": _parse_wellfound,
     "linkedin_jobalerts": _parse_linkedin_jobalerts,
+    "jobright": _parse_jobright,
 }
 
 

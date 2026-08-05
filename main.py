@@ -248,6 +248,18 @@ def run() -> int:
             jobs = [j for j in jobs if not flt.seniority_excluded(j.get("role_title", ""))]
             if len(jobs) != _n:
                 print(f"  {len(jobs)} after seniority exclusion ({_n - len(jobs)} dropped)")
+            # Location-gate only the sources listed in config. Broad feeds
+            # (LinkedIn alerts) need it; curated recruiter mail does not.
+            _gated = set(jobs_cfg.get("location_filtered_sources", []) or [])
+            if jobs and _gated:
+                _n = len(jobs)
+                jobs = [
+                    j for j in jobs
+                    if j.get("source") not in _gated
+                    or flt.location_matches(j.get("location", ""))
+                ]
+                if len(jobs) != _n:
+                    print(f"  {len(jobs)} after location filter ({_n - len(jobs)} dropped)")
             if jobs:
                 existing_keys = database.get_existing_job_keys()
                 fresh = [

@@ -201,9 +201,19 @@ def fetch(gmail_cfg: dict) -> list[Startup]:
         print(f"  Gmail label '{label_name}' not found")
         return []
 
-    results = service.users().messages().list(
-        userId="me", labelIds=[label_id], maxResults=50,
-    ).execute()
+    # Scope to the configured newsletter senders. The label alone is not
+    # enough: users routinely route job alerts into the same label, and since
+    # this call takes the 50 *most recent* labelled messages, a high-volume
+    # sender (LinkedIn alerts run ~7/day) crowds the newsletters out of the
+    # window entirely — the source then reports 0 candidates while the mail
+    # is sitting right there. Filtering by From makes the pull immune to
+    # whatever else shares the label.
+    list_kwargs = {"userId": "me", "labelIds": [label_id], "maxResults": 50}
+    senders = gmail_cfg.get("senders", {}) or {}
+    if senders:
+        list_kwargs["q"] = "(" + " OR ".join(f"from:{a}" for a in senders) + ")"
+
+    results = service.users().messages().list(**list_kwargs).execute()
     messages = results.get("messages", [])
 
     startups: list[Startup] = []

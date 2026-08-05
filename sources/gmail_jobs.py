@@ -193,9 +193,112 @@ def _parse_wellfound(body: str, subject: str, msg_url: str) -> list[dict]:
     return out
 
 
+# --- LinkedIn job alerts (jobalerts-noreply@linkedin.com) -------------------
+
+# Blocks are separated by a run of hyphens.
+_LI_SEP_RE = re.compile(r"^-{10,}$", re.MULTILINE)
+
+# "View job: https://www.linkedin.com/comm/jobs/view/<id>/?<tracking...>"
+_LI_URL_RE = re.compile(
+    r"View job:\s*(?P<url>https://www\.linkedin\.com/comm/jobs/view/(?P<jid>\d+)/[^\s]*)"
+)
+
+# Interstitial lines LinkedIn inserts between location and the apply link.
+# Matched case-insensitively against the whole stripped line.
+_LI_BADGES = {
+    "fast growing",
+    "this company is actively hiring",
+    "actively recruiting",
+    "be an early applicant",
+    "easy apply",
+    "promoted",
+    "viewed",
+    "new",
+    "your profile matches this job",
+    "alum work here",
+    "school alum work here",
+    "connections work here",
+}
+
+
+def _parse_linkedin_jobalerts(body: str, subject: str, msg_url: str) -> list[dict]:
+    """Parse LinkedIn job-alert digests (jobalerts-noreply@linkedin.com).
+
+    Plaintext layout, one block per role, blocks split by a hyphen rule::
+
+        Your job alert for <alert name> in <location>     <- header, first block only
+        <Role Title>
+        <Company>
+        <Location>
+        Fast growing                                      <- optional badge line(s)
+        View job: https://www.linkedin.com/comm/jobs/view/<id>/?<tracking>
+
+    LinkedIn alerts are keyword-matched, so a "product manager" alert routinely
+    returns program managers, product marketers and product designers. We reuse
+    ``newpmjobs.is_product_role`` to keep only genuine PM roles — without it a
+    single digest can add a dozen off-function rows, and ``main.py`` applies
+    only seniority filtering to ``gmail_jobs`` output (no role/location gate).
+
+    The apply URL carries a long tracking query; we keep just the canonical
+    ``/jobs/view/<id>/`` form so the same posting dedupes across digests.
+    """
+    if not body:
+        return []
+    from sources.newpmjobs import is_product_role
+
+    body = body.replace("\r\n", "\n")
+    out: list[dict] = []
+    seen_ids: set[str] = set()
+
+    for block in _LI_SEP_RE.split(body):
+        m = _LI_URL_RE.search(block)
+        if not m:
+            continue
+        jid = m.group("jid")
+        if jid in seen_ids:
+            continue
+
+        lines: list[str] = []
+        for raw in block[: m.start()].splitlines():
+            s = raw.strip()
+            if not s or s.lower() in _LI_BADGES:
+                continue
+            if s.lower().startswith("your job alert for"):
+                continue
+            lines.append(s)
+
+        if len(lines) < 2:
+            continue
+        role, company = lines[0], lines[1]
+        location = lines[2] if len(lines) > 2 else ""
+        # A salary line ("$120,000/yr - $160,000/yr") can sit where location does.
+        comp = ""
+        if location.startswith("$"):
+            comp, location = location, (lines[3] if len(lines) > 3 else "")
+
+        if not company or len(company) > 60 or len(role) > 90:
+            continue
+        if not is_product_role(role):
+            continue
+
+        seen_ids.add(jid)
+        out.append({
+            "company_name": company,
+            "company_description": comp,
+            "role_title": role,
+            "location": location,
+            "url": f"https://www.linkedin.com/jobs/view/{jid}/",
+            "priority": "",
+            "status": "",
+            "source": "LinkedIn Job Alert",
+        })
+    return out
+
+
 PARSERS: dict[str, Callable[[str, str, str], list[dict]]] = {
     "dgcsearch": _parse_dgcsearch,
     "wellfound": _parse_wellfound,
+    "linkedin_jobalerts": _parse_linkedin_jobalerts,
 }
 
 

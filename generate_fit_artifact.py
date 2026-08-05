@@ -30,7 +30,7 @@ DB = ROOT / "startup_radar.db"
 DOSSIERS = ROOT / "fit_dossiers.json"
 TEMPLATE = ROOT / "fit_artifact_template.html"
 OUT = ROOT / "reports" / "pm_fit_dashboard.html"
-ARTIFACT_URL = "https://claude.ai/code/artifact/209ec015-40c8-467f-9724-455cba7855aa"
+ARTIFACT_URL = "https://claude.ai/code/artifact/288b4ad5-27e3-466b-a005-7f2b5b10e635"
 
 COMP_FLOOR = 150_000  # base-salary deal-breaker
 CATEGORIZED = {"applied", "wishlist", "interested", "not interested"}

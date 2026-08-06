@@ -137,9 +137,19 @@ def run() -> int:
             print(f"  {len(jobs)} active PM role(s)")
             flt = JobFilter(cfg)
             _n = len(jobs)
-            jobs = [j for j in jobs if not flt.seniority_excluded(j.get("role_title", ""))]
+            jobs = [
+                j for j in jobs
+                if not flt.seniority_excluded(
+                    j.get("role_title", ""), j.get("company_description", "")
+                )
+            ]
             if len(jobs) != _n:
                 print(f"  {len(jobs)} after seniority exclusion ({_n - len(jobs)} dropped)")
+            # Hard gate — applies even to sources that skip location filtering.
+            _n = len(jobs)
+            jobs = [j for j in jobs if not flt.location_excluded(j.get("location", ""))]
+            if len(jobs) != _n:
+                print(f"  {len(jobs)} after non-US remote exclusion ({_n - len(jobs)} dropped)")
             if jobs and npj_cfg.get("location_filter", True):
                 jobs = [j for j in jobs if flt.location_matches(j["location"])]
                 print(f"  {len(jobs)} after location filter")
@@ -173,9 +183,19 @@ def run() -> int:
             print(f"  {len(jobs)} matching role(s)")
             flt = JobFilter(cfg)
             _n = len(jobs)
-            jobs = [j for j in jobs if not flt.seniority_excluded(j.get("role_title", ""))]
+            jobs = [
+                j for j in jobs
+                if not flt.seniority_excluded(
+                    j.get("role_title", ""), j.get("company_description", "")
+                )
+            ]
             if len(jobs) != _n:
                 print(f"  {len(jobs)} after seniority exclusion ({_n - len(jobs)} dropped)")
+            # Hard gate — applies even to sources that skip location filtering.
+            _n = len(jobs)
+            jobs = [j for j in jobs if not flt.location_excluded(j.get("location", ""))]
+            if len(jobs) != _n:
+                print(f"  {len(jobs)} after non-US remote exclusion ({_n - len(jobs)} dropped)")
             if jobs and rok_cfg.get("location_filter", True):
                 jobs = [j for j in jobs if flt.location_matches(j["location"])]
                 print(f"  {len(jobs)} after location filter")
@@ -209,9 +229,19 @@ def run() -> int:
             print(f"  {len(jobs)} PM role(s)")
             flt = JobFilter(cfg)
             _n = len(jobs)
-            jobs = [j for j in jobs if not flt.seniority_excluded(j.get("role_title", ""))]
+            jobs = [
+                j for j in jobs
+                if not flt.seniority_excluded(
+                    j.get("role_title", ""), j.get("company_description", "")
+                )
+            ]
             if len(jobs) != _n:
                 print(f"  {len(jobs)} after seniority exclusion ({_n - len(jobs)} dropped)")
+            # Hard gate — applies even to sources that skip location filtering.
+            _n = len(jobs)
+            jobs = [j for j in jobs if not flt.location_excluded(j.get("location", ""))]
+            if len(jobs) != _n:
+                print(f"  {len(jobs)} after non-US remote exclusion ({_n - len(jobs)} dropped)")
             if jobs and waas_cfg.get("location_filter", False):
                 jobs = [j for j in jobs if flt.location_matches(j["location"])]
                 print(f"  {len(jobs)} after location filter")
@@ -245,9 +275,19 @@ def run() -> int:
             print(f"  {len(jobs)} role candidate(s)")
             flt = JobFilter(cfg)
             _n = len(jobs)
-            jobs = [j for j in jobs if not flt.seniority_excluded(j.get("role_title", ""))]
+            jobs = [
+                j for j in jobs
+                if not flt.seniority_excluded(
+                    j.get("role_title", ""), j.get("company_description", "")
+                )
+            ]
             if len(jobs) != _n:
                 print(f"  {len(jobs)} after seniority exclusion ({_n - len(jobs)} dropped)")
+            # Hard gate — applies even to sources that skip location filtering.
+            _n = len(jobs)
+            jobs = [j for j in jobs if not flt.location_excluded(j.get("location", ""))]
+            if len(jobs) != _n:
+                print(f"  {len(jobs)} after non-US remote exclusion ({_n - len(jobs)} dropped)")
             # Location-gate only the sources listed in config. Broad feeds
             # (LinkedIn alerts) need it; curated recruiter mail does not.
             _gated = set(jobs_cfg.get("location_filtered_sources", []) or [])

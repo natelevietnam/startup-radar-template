@@ -119,6 +119,10 @@
   .conn{font-size:12.5px;color:var(--muted);margin-top:4px}
   .conn b{color:var(--ink)}
   .orole{display:inline-block;font-size:11.5px;font-family:var(--mono);background:var(--brand-soft);color:var(--brand);padding:2px 8px;border-radius:6px;margin:0 6px 3px 0}
+  .orole.new{background:#FDF3E0;color:#8A5D12;box-shadow:inset 0 0 0 1px #EBD4A8}
+  .repost{display:inline-block;font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:.04em;
+    text-transform:uppercase;background:#FDF3E0;color:#8A5D12;border:1px solid #EBD4A8;
+    padding:2px 8px;border-radius:999px;margin-left:9px;vertical-align:3px}
   .line a{color:var(--brand);font-weight:600;white-space:nowrap}
 
   footer{padding:30px 0 50px;color:var(--faint);font-size:12px;border-top:1px solid var(--hair);margin-top:24px}
@@ -181,6 +185,7 @@
     <button class="fbtn" data-f="weak">45–54</button>
     <button class="fbtn" data-f="pass">&lt;45</button>
     <button class="fbtn" data-f="pending">New / not researched</button>
+    <button class="fbtn" data-f="stale">Re-posted since research</button>
   </div>
   <input id="q" type="search" placeholder="Filter by company, role, or keyword…" aria-label="Filter companies">
   <span class="count" id="count"></span>
@@ -258,11 +263,12 @@ function dimRow(label,txt){
 function renderCards(rows){
   document.getElementById('cards').innerHTML = rows.map(d=>{
     const t=tierOf(d),c=TIER[t].c;
+    const newSet = new Set((d.newRoles||[]).map(r=>r.toLowerCase()));
     const openRoles = (d.openRoles&&d.openRoles.length)
-      ? `<div class="line"><span class="k">Open now (Uncategorized)</span>${d.openRoles.map(r=>`<span class="orole">${r}</span>`).join('')}</div>` : '';
+      ? `<div class="line"><span class="k">Open now (Uncategorized)</span>${d.openRoles.map(r=>`<span class="orole${newSet.has(r.toLowerCase())?' new':''}">${r}</span>`).join('')}</div>` : '';
     const head = `<div class="chead">
           <span class="rank">#${d._rank??'—'}</span>
-          <div><div class="name">${d.co}</div><div class="role">${d.role}</div></div>
+          <div><div class="name">${d.co}${d.stale?'<span class="repost">re-posted</span>':''}</div><div class="role">${d.role}</div></div>
           <div class="scorebox"><div class="num" style="color:${c}">${d.pending?'—':d.score}${d.pending?'':'<small>/100</small>'}</div>
             ${d.pending?'':`<div class="bar"><i style="width:${d.score}%;background:${c}"></i></div>`}
             ${vpill(t,true)}</div>
@@ -284,6 +290,7 @@ function renderCards(rows){
       <div class="cbody">${head}
         <div class="snap">${d.snap.map(s=>`<span class="s">${s}</span>`).join('')}</div>
         ${openRoles}
+        ${d.stale?`<div class="line"><span class="k">Since research</span>Dossier dated <b>${d.researchedAt||'—'}</b>; ${d.newRoles.length} role(s) highlighted above opened after it. Treat the score as provisional until the company is re-checked.</div>`:''}
         <div class="line"><span class="k">Founder / operating style</span>${d.founder}</div>
         <div class="line"><span class="k">Likely hiring manager / product org</span>${d.hm}
           ${d.conn?`<div class="conn">${d.conn}</div>`:''}</div>
@@ -306,7 +313,8 @@ function apply(){
   let rows=DATA.slice().sort((a,b)=>(b.pending?-1:b.score)-(a.pending?-1:a.score));
   let n=0; rows.forEach(d=>{ d._rank = d.pending? null : (++n); });
   let view=rows.filter(d=>{
-    const okF = curFilter==='all'||tierOf(d)===curFilter;
+    // "stale" cuts across score tiers, so it can't go through tierOf().
+    const okF = curFilter==='all' || (curFilter==='stale' ? !!d.stale : tierOf(d)===curFilter);
     const okQ = !curQ||d.search.includes(curQ);
     return okF&&okQ;
   });
@@ -314,7 +322,7 @@ function apply(){
   document.getElementById('count').textContent = view.length+' / '+DATA.length+' shown';
 }
 function boot(){
-  DATA.forEach(d=>{d.search=(d.co+' '+(d.role||'')+' '+((d.openRoles||[]).join(' '))+' '+(d.headline||'')+' '+(d.search0||'')+' '+(d.founder||'')).toLowerCase();});
+  DATA.forEach(d=>{d.search=(d.co+' '+(d.role||'')+' '+((d.openRoles||[]).join(' '))+' '+(d.headline||'')+' '+(d.search0||'')+' '+(d.founder||'')+(d.stale?' re-posted reposted stale since research':'')).toLowerCase();});
   renderFindings(); renderLegend(); apply();
   document.querySelectorAll('.fbtn').forEach(b=>b.addEventListener('click',()=>{
     document.querySelectorAll('.fbtn').forEach(x=>x.setAttribute('aria-pressed','false'));

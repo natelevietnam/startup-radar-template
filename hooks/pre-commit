@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""Reject hardcoded claude.ai Artifact URLs outside config.yaml.
+
+The PM-Fit dashboard's Artifact URL is account-specific: republishing from a
+different Claude account mints a new one. It used to be pasted into three
+files, and the 2026-08 account migration updated two of them — leaving the
+startup-radar skill publishing to a dead URL while the code used the live one.
+
+The URL now lives only in `config.yaml` under `output.fit_artifact_url`, read
+via `generate_fit_artifact.artifact_url()`. This hook keeps it that way.
+
+Escape hatch: put `artifact-url-ok` in a comment on the same line. Use it only
+for a documented fallback, never to reintroduce a second live copy.
+
+Usage:
+    hooks/pre-commit           # staged changes (how git invokes it)
+    hooks/pre-commit --all     # every tracked file, for CI or a manual sweep
+
+Install (once per clone):
+    git config core.hooksPath hooks
+"""
+from __future__ import annotations
+
+import re
+import subprocess
+import sys
+
+# Only real artifact IDs — doc placeholders like `<new-id>` are fine.
+PATTERN = re.compile(r"claude\.ai/code/artifact/[0-9A-Za-z][0-9A-Za-z-]{7,}")
+ALLOW_MARKER = "artifact-url-ok"
+ALLOWED_PATHS = {"config.yaml"}
+SCAN_SUFFIXES = (".py", ".md", ".yaml", ".yml", ".html", ".json", ".txt", ".sh")
+
+
+def _git(*args: str) -> str:
+    return subprocess.run(["git", *args], capture_output=True, text=True).stdout
+
+
+def _files(scan_all: bool) -> list[str]:
+    if scan_all:
+        out = _git("ls-files")
+    else:
+        out = _git("diff", "--cached", "--name-only", "--diff-filter=ACM")
+    return [f for f in out.splitlines() if f.strip()]
+
+
+def _content(path: str, scan_all: bool) -> str:
+    """Read the staged blob, not the worktree — they can differ."""
+    if scan_all:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                return fh.read()
+        except OSError:
+            return ""
+    return _git("show", f":{path}")
+
+
+def main(argv: list[str]) -> int:
+    scan_all = "--all" in argv
+    hits: list[tuple[str, int, str]] = []
+
+    for path in _files(scan_all):
+        if path in ALLOWED_PATHS or not path.endswith(SCAN_SUFFIXES):
+            continue
+        for lineno, line in enumerate(_content(path, scan_all).splitlines(), 1):
+            if PATTERN.search(line) and ALLOW_MARKER not in line:
+                hits.append((path, lineno, line.strip()))
+
+    if not hits:
+        return 0
+
+    print("\n  Hardcoded Artifact URL blocked\n")
+    for path, lineno, line in hits:
+        print(f"    {path}:{lineno}")
+        print(f"      {line[:110]}")
+    print(
+        "\n  That URL is account-specific and goes stale silently — a past migration\n"
+        "  left the startup-radar skill publishing to a dead one for weeks.\n\n"
+        "  Read it at run time instead:\n"
+        "    python:  from generate_fit_artifact import artifact_url\n"
+        "    shell:   python generate_fit_artifact.py --artifact-url\n"
+        "    config:  config.yaml -> output.fit_artifact_url\n\n"
+        f"  Genuinely need a literal? Add `{ALLOW_MARKER}` in a comment on that line.\n"
+        "  Bypass entirely with `git commit --no-verify`.\n"
+    )
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

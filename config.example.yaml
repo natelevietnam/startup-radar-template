@@ -154,6 +154,14 @@ output:
     enabled: true
     path: startup_radar.db
 
+  # PM-Fit dashboard Artifact URL, minted the first time you publish it.
+  # Account-specific — republishing from a different Claude account creates a
+  # new URL. Set it here and nowhere else: generate_fit_artifact.py, app.py and
+  # the startup-radar skill all read it from this key
+  # (`python generate_fit_artifact.py --artifact-url`). Leave blank until you
+  # have published once.
+  fit_artifact_url: ""
+
   # Optional — requires Google OAuth.
   google_sheets:
     enabled: false

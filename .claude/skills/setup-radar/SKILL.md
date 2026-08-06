@@ -87,6 +87,7 @@ Show the full generated YAML before writing. Confirm. Write to `config.yaml`.
 After writing `config.yaml`:
 
 1. Install dependencies: run `pip install -r requirements.txt`
+1. Bind the repo's git hooks: run `git config core.hooksPath hooks`. Git never clones hooks, so without this the artifact-URL guard in `hooks/pre-commit` is silently inactive. Skip only if the project isn't a git repo.
 2. **Run the pipeline once** — this is required so there's actual data to show: run `python main.py`. Do NOT skip this step. Wait for it to finish and confirm it ran successfully.
 3. Then ask: **"Would you like to see the Dashboard or Output?"**
    - If user picks **Dashboard** (the default): run `streamlit run app.py`

@@ -81,6 +81,9 @@ git clone https://github.com/natelevietnam/startup-radar-template.git
 cd startup-radar-template
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
+# hooks aren't cloned — bind them, or the artifact-URL guard is silently off
+git config core.hooksPath hooks
+
 # restore the backup bundle over the clone:
 tar xzf ~/Downloads/radar-migration-backup-<date>.tar.gz -C .
 #   -> restores startup_radar.db, config.yaml, fit_dossiers.json,
@@ -155,9 +158,13 @@ gh secret set CONFIG_YAML -R natelevietnam/startup-radar-template < /tmp/config.
 
 - **Skills** — already in the repo (`.claude/skills/`: `startup-radar`, `deepdive`, `setup-radar`). They work as soon as you open the project in the new Claude account. No action beyond the clone.
 - **Memory** — copy the 5 radar-relevant `.md` files (Step 3). New account starts fresh otherwise.
-- **Fit-artifact URL** — the current URL (`…/artifact/209ec015-40c8-467f-9724-455cba7855aa`) is owned by your *old* Claude account and can't be redeployed to from the new one. First run of `generate_fit_artifact.py` + publishing from the new account mints a **new URL**; paste it into:
-  - `.claude/skills/startup-radar/SKILL.md` (steps 4 & the example line)
-  - the `pm-fit-artifact` memory note
+- **Fit-artifact URL** — an artifact URL is owned by the Claude account that published it and can't be redeployed to from another one. First run of `generate_fit_artifact.py` + publishing from the new account mints a **new URL**. Set it in **one** place:
+  ```yaml
+  # config.yaml
+  output:
+    fit_artifact_url: "https://claude.ai/code/artifact/<new-id>"
+  ```
+  `generate_fit_artifact.py`, `app.py`, and the `startup-radar` skill all read it from there via `artifact_url()` / `--artifact-url`. Do not paste copies into code, the skill, or memory notes — an earlier migration did exactly that and left the skill publishing to a dead URL while the code used the live one. Verify with `python generate_fit_artifact.py --artifact-url`.
 - **MCP integrations** — reconnect Gmail/Drive on the new Claude account if you want ad-hoc email reads. *(Not required for the cron — that uses `token.json`.)*
 
 ---

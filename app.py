@@ -507,9 +507,10 @@ elif page == "Job Matches":
     # PM-Fit dashboard: a fit-scored view of the Uncategorized roles below,
     # regenerated from this DB each time Startup Radar is opened (see the
     # startup-radar skill + generate_fit_artifact.py).
+    from generate_fit_artifact import artifact_url
+
     st.markdown(
-        "🎯 **[Open the PM-Fit Dashboard]"
-        "(https://claude.ai/code/artifact/288b4ad5-27e3-466b-a005-7f2b5b10e635)** "
+        f"🎯 **[Open the PM-Fit Dashboard]({artifact_url()})** "
         "— founder/culture fit-scoring for the Uncategorized roles below. "
         "Refreshes when you open Startup Radar."
     )

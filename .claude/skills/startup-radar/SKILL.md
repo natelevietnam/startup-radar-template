@@ -31,11 +31,28 @@ Run `.venv/bin/python ingest_waas_inbound.py`.
 
 ### 4. Refresh the PM-Fit dashboard artifact
 Regenerate the fit dashboard from the current Uncategorized Job Matches and re-publish it to the existing Artifact URL so it stays in sync with the pipeline.
-- Run `.venv/bin/python generate_fit_artifact.py`. It writes `reports/pm_fit_dashboard.html` from the live DB + cached dossiers (`fit_dossiers.json`) and prints a summary + the publish URL.
-- Re-publish with the **Artifact tool**: `file_path=reports/pm_fit_dashboard.html`, `url=https://claude.ai/code/artifact/209ec015-40c8-467f-9724-455cba7855aa` (pass the `url` to keep the link stable), `favicon=🎯`.
-- Report one line, e.g. `Fit dashboard: 31 companies (3 new/pending) → refreshed`.
+Research is cached, never redone just because the dashboard was opened. Each dossier in `fit_dossiers.json` carries `researchedAt` + `researchedRoles`; a company is only revisited when it posts a role that isn't on that list.
+
+**a. Auto-refresh the top scorers that re-posted.** Before generating, run:
+```
+.venv/bin/python generate_fit_artifact.py --stale --auto
+```
+Each line is `company · score · AUTO · researched <date> · new: <roles>`. These scored **≥ 75**, so a changed read matters — re-run deep research for each (same method as `/deepdive`), replace that company's entry in `fit_dossiers.json`, then stamp the new baseline so it stops flagging:
+```
+.venv/bin/python generate_fit_artifact.py --mark-researched "Hex" "Plaid"
+```
+If the list is empty, skip straight to (c). If it's long (>6 companies), refresh the top 6 by score and say which ones you deferred — don't silently truncate.
+
+**b. Leave the rest flagged.** `--stale` (without `--auto`) lists the sub-75 companies that also re-posted. Don't research these; they render with a `re-posted` badge and their new roles highlighted, and Nate refreshes them on demand.
+
+**c. Generate and publish.**
+- Run `.venv/bin/python generate_fit_artifact.py`. It writes `reports/pm_fit_dashboard.html` from the live DB + cached dossiers and prints a summary + the publish URL.
+- Re-publish with the **Artifact tool**: `file_path=reports/pm_fit_dashboard.html`, `favicon=🎯`, and `url=` the URL the generator prints (or `.venv/bin/python generate_fit_artifact.py --artifact-url`). Passing `url` is what keeps the link stable.
+- **Never hardcode that URL here or anywhere else.** It lives in `config.yaml` under `output.fit_artifact_url` and is account-specific; a past migration left a stale copy in this file and the skill published to a dead URL for weeks. Always read it at run time.
+- Report one line, e.g. `Fit dashboard: 31 companies (3 new/pending, 2 re-posted → refreshed) → published`.
 - Idempotent and safe. If the generator or publish fails, note it and continue — never block the dashboard on it.
-- New companies show as "pending" cards (JD facts + cheap gate flags). To deep-dive them on demand: `.venv/bin/python generate_fit_artifact.py --missing`, research those companies, append entries to `fit_dossiers.json`, and re-run.
+
+**d. Brand-new companies** (no dossier at all) show as "pending" cards — JD facts + cheap gate flags, no research. To deep-dive on demand: `.venv/bin/python generate_fit_artifact.py --missing`, research those companies, append entries to `fit_dossiers.json`, run `--mark-researched` for them, and re-run. Don't do this automatically; it's an explicit ask.
 
 ### 5. Check if Streamlit is already running
 ```

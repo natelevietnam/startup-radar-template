@@ -1,0 +1,30 @@
+name: Checks
+
+# Tripwire for the local pre-commit hook, which git never clones and which
+# `--no-verify` skips. Catches web-UI edits and clones that never ran
+# `git config core.hooksPath hooks` — the exact gap that let a stale artifact
+# URL sit in the startup-radar skill through an account migration.
+#
+# Runs on pushes to main too, not just PRs: most commits here land on main
+# directly, so a pull_request-only trigger would miss them.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  artifact-url-guard:
+    name: No hardcoded Artifact URLs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Deliberately no setup-python / pip install: the hook is stdlib + git
+      # only, so the runner's built-in python3 is enough and the job stays
+      # ~20s. Keep it that way — a dependency here would make it skippable.
+      - name: Scan tracked files
+        run: python3 hooks/pre-commit --all

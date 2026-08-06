@@ -509,7 +509,7 @@ elif page == "Job Matches":
     # startup-radar skill + generate_fit_artifact.py).
     st.markdown(
         "🎯 **[Open the PM-Fit Dashboard]"
-        "(https://claude.ai/code/artifact/209ec015-40c8-467f-9724-455cba7855aa)** "
+        "(https://claude.ai/code/artifact/288b4ad5-27e3-466b-a005-7f2b5b10e635)** "
         "— founder/culture fit-scoring for the Uncategorized roles below. "
         "Refreshes when you open Startup Radar."
     )

@@ -8,6 +8,7 @@ token.json
 .secrets/
 
 # User data
+fit_dossiers.json
 *.db
 *.db-shm
 *.db-wal

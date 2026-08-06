@@ -34,6 +34,26 @@ targets:
     - director
     - head of
 
+  # Regex escape hatch for tiers a literal substring can't express — e.g.
+  # "lead product manager" does not match "Lead Data Product Manager".
+  # Matched case-insensitively against the role title. Leave empty to skip.
+  title_exclusion_patterns: []
+  #  - '\blead\b.*\bproduct\s+manage'      # Lead <anything> Product Manager
+  #  - '\b(sr\.?|senior)\s+manager\b'      # manager-of-managers tier
+
+  # Some feeds tag a seniority level alongside the title (NewPMJobs does).
+  # Levels listed here are excluded even when the title looks in-band.
+  level_exclusions: []
+  #  - director
+  #  - principal
+
+  # How to treat listings that say "remote":
+  #   "any" — accept them all (default)
+  #   "us"  — accept only US-eligible remote roles. Job boards describe a role
+  #           as "Remote" when it's remote *within Iberia* or *within Germany*;
+  #           this drops those. Bare "Remote" with no country is still kept.
+  remote_scope: any
+
   # Locations you're open to (case-insensitive substring).
   # Replace these with whatever cities/regions you care about.
   locations:

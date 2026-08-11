@@ -375,11 +375,116 @@ def _parse_jobright(body: str, subject: str, msg_url: str) -> list[dict]:
     return out
 
 
+# --- Next Play (nextplayso@substack.com) ------------------------------------
+
+# Only these sections carry openings. "Co-founders and people to jam with"
+# is networking, "Resources and tools" and "Note" are editorial.
+_NP_JOB_SECTIONS = {"Early teams:", "Scaling startups:", "Investing and other:"}
+
+# "Brendan from Holly is hiring a founding product manager, a deployment
+#  strategist, and a founding data engineer. They are building ... (NYC, SF)"
+_NP_HIRE_RE = re.compile(
+    r"^(?P<who>.{2,80}?)\s+from\s+(?P<co>.{2,60}?)\s+is hiring\s+(?P<roles>.+?)\.\s",
+    re.S,
+)
+_NP_LOC_RE = re.compile(r"\(([^()]{2,60})\)\s*$")
+_NP_APPLY_RE = re.compile(r"Apply here\s*\[\s*(?P<url>https?://\S+?)\s*\]")
+_NP_BUILDING_RE = re.compile(r"They(?:'re| are)\s+building\s+(?P<what>[^.]{4,160})\.")
+_NP_LINK_RE = re.compile(r"\[\s*(?:https?://|mailto:)\S+?\s*\]")
+_NP_ROLE_SPLIT_RE = re.compile(r",\s*(?:and\s+)?|\s+and\s+")
+
+
+def _parse_nextplay(body: str, subject: str, msg_url: str) -> list[dict]:
+    """Parse Next Play's Tuesday roundup (nextplayso@substack.com).
+
+    Plaintext Substack. Openings are prose, not a table::
+
+        Early teams:
+        Brendan from Holly is hiring a founding product manager, a deployment
+        strategist, and a founding data engineer. They are building a
+        classification platform for government HR teams. Apply here [ url ]. (NYC, SF)
+
+    So one line can yield several roles. We anchor on "<who> from <company> is
+    hiring <roles>." and split the role list on commas/"and", which covers 207
+    of 241 candidate lines over 20 editions. The rest are unattributed
+    ("An anonymous agency is hiring...") or house ads, and are skipped rather
+    than guessed at.
+
+    Most roles here are GTM, founding-engineer or chief-of-staff — of 379 role
+    mentions only 20 were product — so ``is_product_role`` does the filtering.
+    That is a real yield though (~1/edition) and they skew founding-PM at
+    seed-stage startups, which is the target profile.
+
+    The same address also sends Sunday essays with no job sections; those parse
+    to an empty list, which is correct.
+    """
+    if not body:
+        return []
+    from sources.newpmjobs import is_product_role
+
+    out: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    section: str | None = None
+
+    for raw in body.split("\n"):
+        line = raw.strip()
+        if line in _NP_JOB_SECTIONS:
+            section = line
+            continue
+        # Any other "Header:" line closes the current section.
+        if line.endswith(":") and 3 < len(line) < 58 and "http" not in line:
+            section = None
+            continue
+        if not section or len(line) < 40:
+            continue
+
+        apply_m = _NP_APPLY_RE.search(line)
+        flat = _NP_LINK_RE.sub("", line)
+        flat = re.sub(r"\s{2,}", " ", flat).strip()
+
+        m = _NP_HIRE_RE.match(flat)
+        if not m:
+            continue
+
+        company = m.group("co").strip()
+        # "8090 (and host of the All-in-Podcast)" -> "8090"
+        company = re.sub(r"\s*\([^)]*\)\s*$", "", company).strip(" .,")
+        if not company or len(company) > 60:
+            continue
+
+        loc_m = _NP_LOC_RE.search(flat)
+        location = loc_m.group(1).strip() if loc_m else ""
+        built_m = _NP_BUILDING_RE.search(flat)
+        desc = built_m.group("what").strip() if built_m else ""
+        url = apply_m.group("url") if apply_m else msg_url
+
+        for part in _NP_ROLE_SPLIT_RE.split(m.group("roles")):
+            role = re.sub(r"^(a|an|the)\s+", "", part.strip(), flags=re.I).strip(" .")
+            if not (2 < len(role) < 70) or not is_product_role(role):
+                continue
+            key = (company.lower(), role.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "company_name": company,
+                "company_description": desc,
+                "role_title": role,
+                "location": location,
+                "url": url,
+                "priority": "",
+                "status": "",
+                "source": "Next Play",
+            })
+    return out
+
+
 PARSERS: dict[str, Callable[[str, str, str], list[dict]]] = {
     "dgcsearch": _parse_dgcsearch,
     "wellfound": _parse_wellfound,
     "linkedin_jobalerts": _parse_linkedin_jobalerts,
     "jobright": _parse_jobright,
+    "nextplay": _parse_nextplay,
 }
 
 

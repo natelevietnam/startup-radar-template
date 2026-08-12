@@ -26,6 +26,7 @@ Usage:
     python generate_fit_artifact.py --stale         # researched companies with new openings
     python generate_fit_artifact.py --stale --auto  # ...only those scoring >= AUTO_REFRESH_SCORE
     python generate_fit_artifact.py --mark-researched "Ramp" "Google"
+    python generate_fit_artifact.py --rebaseline "Ramp"   # accept new roles, keep researchedAt
     python generate_fit_artifact.py --artifact-url    # the publish URL, for scripts/skills
 """
 from __future__ import annotations
@@ -79,6 +80,17 @@ def _load_config() -> dict:
 def _load_config_excludes() -> set[str]:
     ex = (_load_config().get("targets", {}) or {}).get("excluded_companies", []) or []
     return {_norm(x) for x in ex}
+
+
+def _pinned_companies() -> set[str]:
+    """Companies that stay on the dashboard even once categorized.
+
+    Normally applying to a job removes it from this view — it's a queue of
+    undecided opportunities. Pinning is the deliberate exception for a company
+    you're actively in process with and want to keep reading.
+    """
+    pins = (_load_config().get("output", {}) or {}).get("fit_artifact_pinned", []) or []
+    return {_norm(p) for p in pins if str(p).strip()}
 
 
 def artifact_url() -> str:
@@ -161,7 +173,9 @@ def build_data() -> tuple[list[dict], dict]:
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     excludes = _load_config_excludes()
+    pinned = _pinned_companies()
     tombs = _tombstoned(conn)
+    pinned_status: dict[str, str] = {}
 
     rows = conn.execute(
         "select company_name, role_title, location, url, company_description, status "
@@ -171,9 +185,11 @@ def build_data() -> tuple[list[dict], dict]:
     # Group current Uncategorized rows by company.
     by_co: dict[str, dict] = {}
     for r in rows:
-        if (r["status"] or "").strip().lower() in CATEGORIZED:
-            continue
         key = _norm(r["company_name"])
+        if (r["status"] or "").strip().lower() in CATEGORIZED:
+            if key not in pinned:
+                continue
+            pinned_status[key] = (r["status"] or "").strip()
         if key in excludes:
             continue
         if (key, (r["role_title"] or "").strip().lower()) in tombs:
@@ -199,6 +215,8 @@ def build_data() -> tuple[list[dict], dict]:
         if key in dossiers:
             d = dict(dossiers[key])            # cached deep dossier
             d["openRoles"] = open_roles        # live roles from the pipeline
+            if key in pinned:
+                d["pinned"] = pinned_status.get(key, "")
             new_roles = _new_since_research(d, open_roles)
             if new_roles:
                 score = d.get("score")
@@ -269,6 +287,33 @@ def build_data() -> tuple[list[dict], dict]:
     return data, meta
 
 
+def rebaseline(names: list[str]) -> int:
+    """Accept a company's current roles as known, WITHOUT claiming new research.
+
+    Use when a company re-posted but its dossier is recent enough that the
+    company facts haven't moved — only the role list has. Updates
+    `researchedRoles` and leaves `researchedAt` at its original date, so the
+    card keeps telling the truth about when it was last actually researched.
+    """
+    entries = json.loads(DOSSIERS.read_text())
+    wanted = {_norm(n) for n in names}
+    conn = sqlite3.connect(DB)
+    roles_by_co: dict[str, set[str]] = {}
+    for co, role in conn.execute("select company_name, role_title from job_matches"):
+        roles_by_co.setdefault(_norm(co), set()).add((role or "").strip())
+    conn.close()
+
+    n = 0
+    for e in entries:
+        key = _norm(e.get("co", ""))
+        if key in wanted:
+            e["researchedRoles"] = sorted(r for r in roles_by_co.get(key, set()) if r)
+            n += 1
+    if n:
+        DOSSIERS.write_text(json.dumps(entries, ensure_ascii=False, indent=1))
+    return n
+
+
 def mark_researched(names: list[str], when: str = "") -> int:
     """Stamp `researchedAt` + `researchedRoles` on the named dossiers.
 
@@ -326,6 +371,15 @@ def main(argv: list[str]) -> int:
             return 2
         n = mark_researched(names)
         print(f"Stamped {n} dossier(s) as researched today.")
+        return 0
+
+    if "--rebaseline" in argv:
+        names = argv[argv.index("--rebaseline") + 1:]
+        if not names:
+            print("usage: --rebaseline \"Company A\" [\"Company B\" ...]")
+            return 2
+        n = rebaseline(names)
+        print(f"Re-baselined {n} dossier(s); researchedAt left unchanged.")
         return 0
 
     data, meta = build_data()

@@ -120,6 +120,7 @@
   .conn b{color:var(--ink)}
   .orole{display:inline-block;font-size:11.5px;font-family:var(--mono);background:var(--brand-soft);color:var(--brand);padding:2px 8px;border-radius:6px;margin:0 6px 3px 0}
   .orole.new{background:#FDF3E0;color:#8A5D12;box-shadow:inset 0 0 0 1px #EBD4A8}
+  .repost.pin{background:var(--mh-bg);color:var(--mh-tx);border-color:#BFDECB}
   .repost{display:inline-block;font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:.04em;
     text-transform:uppercase;background:#FDF3E0;color:#8A5D12;border:1px solid #EBD4A8;
     padding:2px 8px;border-radius:999px;margin-left:9px;vertical-align:3px}
@@ -223,10 +224,10 @@ const TIER = {
 function tierOf(d){const s=(d&&typeof d==='object')?(d.pending?null:d.score):d;if(s==null)return"pending";return s>=80?"strong":s>=70?"lean":s>=55?"poss":s>=45?"weak":"pass";}
 
 const FINDINGS = [
-  {h:"With Ramp & Anthropic applied, Mercury tops the board",p:"After your applications drop off, the strongest remaining fit is Mercury's founding-team open call (80) — profitable, genuinely AI-native, remote-first and humane by design. Behind it: Decagon (78), Glean (74), Vanta (72), then Substack and Brex (70). The recurring tax is still intensity — verify the Sunday-evening test before believing any paper score."},
-  {h:"Several 'new' pipeline entries are mid-deal or distressed",p:"Diligence the corporate status first: Brex is now a Capital One subsidiary (deal closed Apr 2026), Common Room is being acquired by Zoom (announced Jul 2026, its Integrations-PM req looks pulled), and 23andMe is in Chapter 11. Ownership, equity and roadmap can evaporate — confirm the seat is real and funded."},
-  {h:"E-Verify / STEM-OPT is still the universal blind spot",p:"Unconfirmed for nearly every private company here — and newly at-risk for small shops (Bluesky, Common Room). Big public sponsors are safer (Stripe, Instacart/Maplebear, Snap, Unity all file H-1Bs). PrizePicks explicitly will NOT sponsor. Make it your first screening question everywhere."},
-  {h:"At the big public cos, team ≫ company — and six are quick passes",p:"Stripe, Instacart, Snap, Unity, GitLab all swing from great to grim by team; pin the hiring manager and charter before believing the score. Screened out with a one-line reason: Honeywell (NY-only), AbbVie (pharma QA, not a software PM role), TMEIC & Samsung (industrial/adtech), FourKites (logistics), 23andMe (bankruptcy)."}
+  {h:"Every company on the board is now researched — and the top has changed hands",p:"156 of 156 companies carry a full dossier; nothing is a stub. Ten score 80+, and half of those were invisible this morning: <b>Solidroad (85)</b>, <b>Shepherd (84)</b>, <b>Perplexity (84)</b>, <b>Ivo (82)</b>, <b>WisdomAI (82)</b>. Behind them Fivetran, Harvey, Hex, Reflection and Samsara cluster at 80–81. The middle is thick — 44 companies sit at 70–79 — so the differentiator is rarely the score, it's which one clears sponsorship and comp together."},
+  {h:"Sponsorship finally has real answers instead of shrugs",p:"This was the board's universal blind spot; it isn't any more. <b>Confirmed filings</b>: Solidroad (3 LCAs, $190–210K), Perplexity (27 incl. 2 PM titles), WisdomAI (PM-titled at $230K), Ivo (7 in 2025, and the careers page explicitly offers visa <i>and green card</i> sponsorship), Airwallex (18 SF filings), Kikoff (17), Tools for Humanity (8, median $233K), Unit21 (24). <b>Explicit refusals</b>, stated in the postings themselves: FloQast, Gallup, General Motors — plus Sourcegraph, which limits sponsorship to roles requiring a specific country. Binti, where you're interviewing, still shows no record at all."},
+  {h:"The feed's salary numbers are wrong often enough to distrust by default",p:"Four documented errors today. <b>Upstart</b>: feed said $416–437K, posting says $162–224K. <b>Asana</b>: feed $331–428K, posting $202–230K. <b>Uber Freight</b>: $183–223K estimate against a real sponsored median near $160K. <b>General Motors</b>: $202–226K uncorroborated, comparable req $110–176K. Every one of these came from third-party estimates rather than employer-posted bands. The reliable source is the posting itself — Ashby and Greenhouse APIs and LinkedIn job views returned exact bands where aggregators guessed."},
+  {h:"Roughly a fifth of this board is a ghost, a middleman, or the wrong company",p:"<b>Unverifiable</b> — no funding record, no named founder, no confirmed HQ: Readdy, Picnic, Smart Access, Tandem Ventures, Indigo. <b>Not a real opening</b>: OpenSkills is an SEO course catalog dressed as a job; Jack &amp; Jill is a recruiting agency sourcing for an unnamed client. <b>Likely already closed</b>: Airtable, Arcade, Kira, Raptive, Harvey. <b>Wrong company entirely</b>: 'Otter' is the CloudKitchens restaurant POS, not Otter.ai; 'Everpure' is Pure Storage post-rename. <b>Not even a PM role</b>: Biogen matched on a title keyword and is regulatory affairs. Check the employer is who you think before you invest an hour."}
 ];
 
 const DATA = [ /*DATA*/ ];
@@ -268,7 +269,7 @@ function renderCards(rows){
       ? `<div class="line"><span class="k">Open now (Uncategorized)</span>${d.openRoles.map(r=>`<span class="orole${newSet.has(r.toLowerCase())?' new':''}">${r}</span>`).join('')}</div>` : '';
     const head = `<div class="chead">
           <span class="rank">#${d._rank??'—'}</span>
-          <div><div class="name">${d.co}${d.stale?'<span class="repost">re-posted</span>':''}</div><div class="role">${d.role}</div></div>
+          <div><div class="name">${d.co}${d.pinned?`<span class="repost pin">pinned · ${d.pinned}</span>`:''}${d.stale?'<span class="repost">re-posted</span>':''}</div><div class="role">${d.role}</div></div>
           <div class="scorebox"><div class="num" style="color:${c}">${d.pending?'—':d.score}${d.pending?'':'<small>/100</small>'}</div>
             ${d.pending?'':`<div class="bar"><i style="width:${d.score}%;background:${c}"></i></div>`}
             ${vpill(t,true)}</div>

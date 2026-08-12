@@ -24,8 +24,12 @@ HEADERS = {"User-Agent": "startup-radar-template/1.0 (https://github.com/natelev
 # product-led orgs. These patterns mark a title as a *real* product role.
 _PM_INCLUDE = (
     "product manager",
+    "product managers",
     "product management",
     "product lead",
+    # Word-boundary matching means "product lead" no longer fires inside
+    # "Product Leader", so the variant needs its own entry.
+    "product leader",
     "head of product",
     "director of product",
     "director, product",
@@ -46,19 +50,37 @@ _PM_EXCLUDE = (
     "product analyst",
     "chief of staff",
     "engineering manager",
+    # Life-sciences regulatory/quality titles. In pharma, "product" names the
+    # drug, not a software surface, so phrases like "Drug-Device Combination
+    # Product Lead" or "Product Development Quality Assurance (CMC Product
+    # Lead)" match _PM_INCLUDE while being regulatory roles. Added 2026-08-11
+    # after Biogen's "Senior Regulatory CMC Drug-Device Combination Product
+    # Lead" reached the board.
+    "regulatory affairs",
+    "regulatory cmc",
+    "cmc",
+    "drug-device",
+    "drug device",
+    "pharmacovigilance",
+    "medical affairs",
+    "clinical operations",
+    "quality assurance",
 )
 
 
 def is_product_role(title: str) -> bool:
     """True if the role title looks like a Product-Management role
     (PM / Sr PM / Staff PM / Head of Product / CPO / Product Owner / ...).
+
+    Matching is word-boundary aware so a term never fires inside a longer
+    word (e.g. "cmc" must stand alone, not match "cmcarthur").
     """
     if not title:
         return False
     t = title.lower()
-    if any(bad in t for bad in _PM_EXCLUDE):
+    if any(re.search(r"\b" + re.escape(bad) + r"\b", t) for bad in _PM_EXCLUDE):
         return False
-    if any(good in t for good in _PM_INCLUDE):
+    if any(re.search(r"\b" + re.escape(good) + r"\b", t) for good in _PM_INCLUDE):
         return True
     # Standalone "PM" abbreviation (word-boundary, uppercase only to avoid
     # matching "pm" inside words like "campaign").

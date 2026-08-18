@@ -25,6 +25,20 @@ def _dedup(startups: list[Startup]) -> list[Startup]:
     return out
 
 
+def _record(failures: list, label: str, exc: Exception) -> None:
+    """Print a source failure and remember it so run() can exit non-zero.
+
+    Sources are deliberately isolated — one dead feed must not stop the others
+    — but a caught exception used to leave the exit code at 0. That meant the
+    GitHub Actions cron reported success for eight consecutive days while every
+    Gmail-backed source was failing on an expired OAuth token, and nothing
+    surfaced it. Collect failures here and fail the run at the end instead, so
+    the scheduler emails on the first bad day rather than the thirtieth.
+    """
+    print(f"  {label} failed: {exc}")
+    failures.append((label, str(exc)))
+
+
 def run() -> int:
     print("=" * 60)
     print("Startup Radar")
@@ -41,6 +55,7 @@ def run() -> int:
     database.init_db()
 
     all_startups: list[Startup] = []
+    failures: list = []
     sources_cfg = cfg.get("sources", {})
 
     # --- RSS ---
@@ -92,7 +107,7 @@ def run() -> int:
             print(f"  {len(found)} candidate(s)")
             all_startups.extend(found)
         except Exception as e:
-            print(f"  Gmail source failed: {e}")
+            _record(failures, "Gmail source", e)
 
     # --- Optional: ApplyFYI (curated company directory -> startups watchlist) ---
     afy_cfg = sources_cfg.get("applyfyi", {})
@@ -124,7 +139,7 @@ def run() -> int:
                 else:
                     print("  No new companies to add")
         except Exception as e:
-            print(f"  ApplyFYI source failed: {e}")
+            _record(failures, "ApplyFYI source", e)
 
     # --- Optional: Ali Rohde Jobs (newsletter companies -> startups watchlist) ---
     alr_cfg = sources_cfg.get("alirohde", {})
@@ -156,7 +171,7 @@ def run() -> int:
                 else:
                     print("  No new companies to add")
         except Exception as e:
-            print(f"  Ali Rohde source failed: {e}")
+            _record(failures, "Ali Rohde source", e)
 
     # --- Optional: NewPMJobs.com (public PM job board API -> job_matches) ---
     npj_cfg = sources_cfg.get("newpmjobs", {})
@@ -202,7 +217,7 @@ def run() -> int:
                 else:
                     print("  No new jobs to add")
         except Exception as e:
-            print(f"  NewPMJobs source failed: {e}")
+            _record(failures, "NewPMJobs source", e)
 
     # --- Optional: Remote OK (public remote job board API -> job_matches) ---
     rok_cfg = sources_cfg.get("remoteok", {})
@@ -248,7 +263,7 @@ def run() -> int:
                 else:
                     print("  No new jobs to add")
         except Exception as e:
-            print(f"  Remote OK source failed: {e}")
+            _record(failures, "Remote OK source", e)
 
     # --- Optional: Work at a Startup / YC (authenticated -> job_matches) ---
     waas_cfg = sources_cfg.get("workatastartup", {})
@@ -294,7 +309,7 @@ def run() -> int:
                 else:
                     print("  No new jobs to add")
         except Exception as e:
-            print(f"  WaaS source failed: {e}")
+            _record(failures, "WaaS source", e)
 
     # --- Optional: Gmail jobs (recruiter emails -> job_matches) ---
     jobs_cfg = sources_cfg.get("gmail_jobs", {})
@@ -347,7 +362,7 @@ def run() -> int:
                 else:
                     print("  No new jobs to add")
         except Exception as e:
-            print(f"  Gmail jobs source failed: {e}")
+            _record(failures, "Gmail jobs source", e)
 
     # --- Optional: WaaS inbound messages (company DMs -> tracker leads) ---
     waasmsg_cfg = sources_cfg.get("waas_messages", {})
@@ -364,7 +379,7 @@ def run() -> int:
             else:
                 print("  No new inbound messages")
         except Exception as e:
-            print(f"  WaaS Inbound source failed: {e}")
+            _record(failures, "WaaS Inbound source", e)
 
     print(f"\nTotal extracted: {len(all_startups)}")
 
@@ -408,7 +423,14 @@ def run() -> int:
             google_sheets.append_startups(sheets_cfg["sheet_id"], fresh)
             print(f"Wrote {len(fresh)} to Google Sheet")
         except Exception as e:
-            print(f"Google Sheets write failed: {e}")
+            _record(failures, "Google Sheets write", e)
+
+    if failures:
+        print(f"\n{len(failures)} source(s) failed this run:")
+        for label, msg in failures:
+            print(f"  x {label}: {msg}")
+        print("Exiting non-zero so a scheduled run is reported as failed.")
+        return 1
 
     print("\nDone.")
     return 0

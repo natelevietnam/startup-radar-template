@@ -479,12 +479,107 @@ def _parse_nextplay(body: str, subject: str, msg_url: str) -> list[dict]:
     return out
 
 
+# --- Lenny's Jobs / TrueUp (lennysjobs@trueup.io) ---------------------------
+
+# Company anchors point at trueup.io/co/<slug>; the "N open jobs" link uses
+# the same slug plus /jobs, so require the slug to end the path.
+_TU_CO_RE = re.compile(r"trueup\.io/co/(?P<slug>[a-z0-9\-]+)(?:\?|$)")
+# "REMOTE 6h ago" / "SAN FRANCISCO New today" / "UNITED STATES - REMOTE 9h ago"
+_TU_LOC_RE = re.compile(r"\b(?P<loc>[A-Z][A-Z .,\-]{2,40}?)\s+(?:New today|\d+[hdmw] ago)")
+_TU_FIT_RE = re.compile(r"(?P<fit>\d+)\s*/\s*10")
+_TU_WHY_RE = re.compile(r"Why this job\s+(?P<why>.+?)\s+Why you")
+
+
+def _parse_lennys(body: str, subject: str, msg_url: str) -> list[dict]:
+    """Parse Lenny's Jobs daily alerts (lennysjobs@trueup.io, powered by TrueUp).
+
+    HTML-only, with no ids or classes to key on — but the anchors are highly
+    structured, which is better. Each job contributes an adjacent pair::
+
+        <a href="https://job-boards.greenhouse.io/...">Senior Product Manager</a>
+        <a href="https://www.trueup.io/co/chainguard?...">Chainguard</a>
+
+    Pairing on the company anchor and taking its predecessor gives title and
+    company exactly, with no need to guess where one ends and the other begins
+    — the failure mode that made Jobright and Ali Rohde awkward. It also means
+    ``url`` is the **direct ATS apply link** (Greenhouse / Lever / Gem) rather
+    than an aggregator redirect that rots.
+
+    Location, TrueUp's 0-10 fit score and its "Why this job" line come from the
+    nearest ancestor whose text carries both a score and that heading. All
+    three are optional: a block missing them still yields a row, since title,
+    company and apply URL are the parts that matter.
+
+    Caveat: built from a single alert (2026-08-20) — the subscription is new.
+    Blocks that don't resolve to a title/company pair are skipped rather than
+    guessed at, so an unseen layout variant loses rows instead of inventing
+    them.
+    """
+    if not body:
+        return []
+    from bs4 import BeautifulSoup
+
+    from sources.newpmjobs import is_product_role
+
+    soup = BeautifulSoup(body, "html.parser")
+    anchors = soup.find_all("a", href=True)
+    out: list[dict] = []
+    seen: set[str] = set()
+
+    for i, anchor in enumerate(anchors):
+        m = _TU_CO_RE.search(anchor["href"])
+        if not m or i == 0:
+            continue
+        title_a = anchors[i - 1]
+        role = title_a.get_text(" ", strip=True).replace("\xa0", " ").strip()
+        company = anchor.get_text(" ", strip=True).strip()
+        apply_url = title_a["href"].split("?")[0]
+        if not role or not company or len(company) > 60 or len(role) > 90:
+            continue
+        if not is_product_role(role):
+            continue
+        if apply_url in seen:
+            continue
+        seen.add(apply_url)
+
+        location, fit, why = "", "", ""
+        node = anchor
+        for _ in range(9):
+            node = node.parent
+            if node is None:
+                break
+            txt = re.sub(r"\s+", " ", node.get_text(" ", strip=True))
+            if _TU_FIT_RE.search(txt) and "Why this job" in txt:
+                lm = _TU_LOC_RE.search(txt)
+                # The email shouts locations in caps; title-case for parity
+                # with every other source on the board.
+                location = lm.group("loc").strip().title() if lm else ""
+                fit = _TU_FIT_RE.search(txt).group("fit")
+                wm = _TU_WHY_RE.search(txt)
+                why = wm.group("why").strip() if wm else ""
+                break
+
+        desc = " • ".join(b for b in (f"TrueUp fit {fit}/10" if fit else "", why) if b)
+        out.append({
+            "company_name": company,
+            "company_description": desc,
+            "role_title": role,
+            "location": location,
+            "url": apply_url or msg_url,
+            "priority": "",
+            "status": "",
+            "source": "Lenny's Jobs",
+        })
+    return out
+
+
 PARSERS: dict[str, Callable[[str, str, str], list[dict]]] = {
     "dgcsearch": _parse_dgcsearch,
     "wellfound": _parse_wellfound,
     "linkedin_jobalerts": _parse_linkedin_jobalerts,
     "jobright": _parse_jobright,
     "nextplay": _parse_nextplay,
+    "lennys_jobs": _parse_lennys,
 }
 
 

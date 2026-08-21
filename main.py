@@ -173,6 +173,39 @@ def run() -> int:
         except Exception as e:
             _record(failures, "Ali Rohde source", e)
 
+    # --- Optional: startups.gallery newsletter -> startups watchlist ---
+    sg_cfg = sources_cfg.get("startups_gallery", {})
+    if sg_cfg.get("enabled"):
+        print("\n[Startups Gallery] Fetching...")
+        try:
+            from sources import startups_gallery
+            from filters import JobFilter
+            companies = startups_gallery.fetch(sg_cfg)
+            print(f"  {len(companies)} funded company(ies)")
+            if companies:
+                flt = JobFilter(cfg)  # reuse excluded_companies patterns
+                existing = database.get_existing_companies()
+                rejected = database.get_rejected_companies()
+                fresh = [
+                    c for c in companies
+                    if not flt.company_excluded(c.company_name)
+                    and c.company_name.lower().strip() not in existing
+                    and c.company_name.lower().strip() not in rejected
+                ]
+                if fresh:
+                    added = database.insert_startups(fresh)
+                    print(f"  Added {added} new company(ies) to watchlist")
+                    for c in fresh[:10]:
+                        stage = f" | {c.funding_stage}" if c.funding_stage else ""
+                        amt = f" | {c.amount_raised}" if c.amount_raised else ""
+                        print(f"    {c.company_name}{stage}{amt}")
+                    if len(fresh) > 10:
+                        print(f"    ... and {len(fresh) - 10} more")
+                else:
+                    print("  No new companies to add")
+        except Exception as e:
+            _record(failures, "Startups Gallery source", e)
+
     # --- Optional: NewPMJobs.com (public PM job board API -> job_matches) ---
     npj_cfg = sources_cfg.get("newpmjobs", {})
     if npj_cfg.get("enabled"):

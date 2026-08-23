@@ -216,6 +216,13 @@ def run() -> int:
             jobs = newpmjobs.fetch(npj_cfg)
             print(f"  {len(jobs)} active PM role(s)")
             flt = JobFilter(cfg)
+            # Hard gate — `excluded_companies` applies to job listings too,
+            # not just the startups watchlist. Without this a blacklisted
+            # company's roles still land in job_matches.
+            _n = len(jobs)
+            jobs = [j for j in jobs if not flt.company_excluded(j.get("company_name", ""))]
+            if len(jobs) != _n:
+                print(f"  {len(jobs)} after company exclusion ({_n - len(jobs)} dropped)")
             _n = len(jobs)
             jobs = [
                 j for j in jobs
@@ -262,6 +269,13 @@ def run() -> int:
             jobs = remoteok.fetch(rok_cfg)
             print(f"  {len(jobs)} matching role(s)")
             flt = JobFilter(cfg)
+            # Hard gate — `excluded_companies` applies to job listings too,
+            # not just the startups watchlist. Without this a blacklisted
+            # company's roles still land in job_matches.
+            _n = len(jobs)
+            jobs = [j for j in jobs if not flt.company_excluded(j.get("company_name", ""))]
+            if len(jobs) != _n:
+                print(f"  {len(jobs)} after company exclusion ({_n - len(jobs)} dropped)")
             _n = len(jobs)
             jobs = [
                 j for j in jobs
@@ -308,6 +322,13 @@ def run() -> int:
             jobs = workatastartup.fetch(waas_cfg)
             print(f"  {len(jobs)} PM role(s)")
             flt = JobFilter(cfg)
+            # Hard gate — `excluded_companies` applies to job listings too,
+            # not just the startups watchlist. Without this a blacklisted
+            # company's roles still land in job_matches.
+            _n = len(jobs)
+            jobs = [j for j in jobs if not flt.company_excluded(j.get("company_name", ""))]
+            if len(jobs) != _n:
+                print(f"  {len(jobs)} after company exclusion ({_n - len(jobs)} dropped)")
             _n = len(jobs)
             jobs = [
                 j for j in jobs
@@ -354,6 +375,13 @@ def run() -> int:
             jobs = gmail_jobs.fetch(jobs_cfg)
             print(f"  {len(jobs)} role candidate(s)")
             flt = JobFilter(cfg)
+            # Hard gate — `excluded_companies` applies to job listings too,
+            # not just the startups watchlist. Without this a blacklisted
+            # company's roles still land in job_matches.
+            _n = len(jobs)
+            jobs = [j for j in jobs if not flt.company_excluded(j.get("company_name", ""))]
+            if len(jobs) != _n:
+                print(f"  {len(jobs)} after company exclusion ({_n - len(jobs)} dropped)")
             _n = len(jobs)
             jobs = [
                 j for j in jobs

@@ -1,8 +1,10 @@
 """SQLite database — generic startup + job + connections store."""
 
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from typing import Iterable
 
 import pandas as pd
@@ -161,20 +163,184 @@ def get_existing_job_keys() -> set[str]:
         conn.close()
 
 
-def _job_key(company_name: str, role_title: str) -> str:
-    return f"{(company_name or '').lower().strip()}|{(role_title or '').lower().strip()}"
-
-
 def get_deleted_job_keys() -> set[str]:
-    """Tombstoned (company|role) keys — jobs the user has deleted.
+    """Tombstoned canonical (company|role) keys — jobs the user has deleted.
 
-    Same key format as :func:`get_existing_job_keys`, so callers can filter
-    with a single ``key in tombstones`` check before inserting.
+    Canonical rather than literal, for the same reason decided rows are: a
+    deleted posting that comes back as "Product Manager (Remote)" is the job
+    you already deleted, and must not reappear on the Uncategorized board.
     """
     conn = _connect()
     try:
         rows = conn.execute("SELECT company_name, role_title FROM deleted_jobs").fetchall()
-        return {_job_key(r[0], r[1]) for r in rows}
+        return {_canon_job_key(r[0], r[1]) for r in rows}
+    finally:
+        conn.close()
+
+
+# Statuses that mean "I have already categorized this job." A row carrying one
+# of these must never reappear on the Uncategorized board, even if the source
+# re-posts it under a cosmetically different title. Covers every non-blank
+# option in the dashboard's status picker, so anything you have filed once
+# stays filed.
+DECIDED_STATUSES = ("Applied", "Not Interested", "Interested", "Wishlist")
+
+# Decorations that job boards bolt onto a title without changing the role:
+# "[Pipeline] Product Manager" and "Product Manager (Remote)" are both just
+# "Product Manager". Bracketed and parenthesised tags are noise at either end.
+_LEADING_DECORATION = re.compile(r"^\s*[\[\(][^\]\)]{0,40}[\]\)]\s*")
+
+# A trailing suffix — bracketed or after a dash — is only noise when it is a
+# location, a work arrangement or a requisition number. This vocabulary is
+# deliberately closed, because a trailing parenthetical usually carries the
+# *scope* that distinguishes two live reqs: Traba's "Senior Product Manager
+# (Marketplace)" and "(AI Agents)" are different jobs, as are Palo Alto
+# Networks' "(Prisma AIRS)" and "(Application Security)". Collapsing those
+# would bury a real opening under an unrelated decision — the exact failure
+# this canonicalisation exists to prevent, inverted.
+_NOISE = (
+    r"remote(\s*[-–—,]?\s*\(?(us|usa|united\s+states)\)?)?"
+    r"|hybrid|on-?site|in-?office"
+    r"|(full|part)[-\s]?time|contract(or)?|temporary|permanent"
+    r"|u\.?s\.?a?\.?|united\s+states"
+    r"|req(uisition)?\.?\s*#?\s*\d+|r[-–—]?\d{3,}|#\s*\d{3,}"
+    r"|[A-Za-z][A-Za-z .'\-]{1,28},\s*[A-Za-z]{2}"
+)
+_TRAILING_DECORATION = re.compile(rf"\s*[\[\(]\s*({_NOISE})\s*[\]\)]\s*$", re.IGNORECASE)
+_TRAILING_NOISE = re.compile(rf"\s*[-–—,]\s*({_NOISE})\s*$", re.IGNORECASE)
+
+# Legal/formatting suffixes that don't distinguish an employer. "ALSO." and
+# "Also" are one company; so are "Acme, Inc." and "Acme". Parenthesised
+# aliases go too, so "Amazon Web Services (AWS)" matches "Amazon Web Services".
+_COMPANY_ALIAS = re.compile(r"\s*[\(\[][^\)\]]{0,40}[\)\]]\s*")
+_COMPANY_SUFFIX = re.compile(
+    r"\b(inc|llc|l\.l\.c|ltd|limited|corp|corporation|gmbh|plc|pty|holdings)\b"
+)
+
+
+def canon_role(role_title: str) -> str:
+    """Canonical form of a role title, for same-job matching across re-posts.
+
+    Strips bracketed tags at either end, closed-vocabulary location/arrangement
+    /req-number suffixes, punctuation and repeated whitespace, then lowercases.
+    Deliberately *keeps* seniority and scope words: "Product Manager I, Ads"
+    and "Product Manager II, Ads" are different reqs, as are "Product Manager"
+    and "Senior Product Manager", and collapsing them would hide genuinely new
+    openings — the opposite of the bug this guards against.
+    """
+    t = role_title or ""
+    # Decorations stack ("[Pipeline] PM (Remote) - San Francisco, CA"), so peel
+    # until nothing more comes off rather than making a single pass.
+    for _ in range(4):
+        before = t
+        t = _LEADING_DECORATION.sub("", t)
+        t = _TRAILING_DECORATION.sub("", t)
+        t = _TRAILING_NOISE.sub("", t)
+        if t == before:
+            break
+    t = re.sub(r"[^a-z0-9]+", " ", t.lower())
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def canon_company(company_name: str) -> str:
+    """Canonical employer name — punctuation, aliases and legal suffixes out."""
+    c = _COMPANY_ALIAS.sub(" ", company_name or "")
+    c = re.sub(r"[^a-z0-9]+", " ", c.lower())
+    c = _COMPANY_SUFFIX.sub(" ", c)
+    return re.sub(r"\s+", " ", c).strip()
+
+
+# Query parameters that identify the *referrer*, not the posting. Everything
+# else is kept, because plenty of boards carry the job id in the query string.
+_TRACKING_PARAMS = frozenset({
+    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+    "gh_src", "gh_jid_src", "src", "source", "ref", "referrer", "trk",
+    "trackingid", "lipi", "originalsubdomain", "position", "pagenum",
+})
+
+# Paths that are a company's careers *index*, not one posting. Keying on these
+# would block every future role at that employer: binti.com/careers/ already
+# carries two unrelated openings in this database.
+_INDEX_PATH = re.compile(
+    r"(^|/)(careers?|jobs?|openings?|positions?|vacancies|join-?us)/?$", re.IGNORECASE
+)
+
+
+def canon_url(url: str) -> str:
+    """Normalised posting URL, or "" when the URL can't identify one posting.
+
+    Returns "" for careers-index pages and for paths with no posting-shaped
+    segment, so that a shared index URL never collapses two distinct roles.
+    """
+    u = (url or "").strip()
+    if not u:
+        return ""
+    try:
+        parts = urlsplit(u if "//" in u else "//" + u)
+    except ValueError:
+        return ""
+    host = (parts.netloc or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    path = (parts.path or "").rstrip("/")
+    if not host or _INDEX_PATH.search(path):
+        return ""
+    segments = [s for s in path.split("/") if s]
+    # A real posting URL carries an id or a slug deep in the path. A bare
+    # /company or / is an index by another name.
+    if not segments or not (
+        any(any(ch.isdigit() for ch in s) for s in segments) or len(segments) >= 3
+    ):
+        return ""
+    query = sorted(
+        (k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+        if k.lower() not in _TRACKING_PARAMS
+    )
+    return urlunsplit(("", host, path.lower(), urlencode(query), ""))
+
+
+def _canon_job_key(company_name: str, role_title: str) -> str:
+    return f"{canon_company(company_name)}|{canon_role(role_title)}"
+
+
+def get_decided_job_keys() -> set[str]:
+    """Canonical (company|role) keys the user has already decided about.
+
+    The unique index already stops an identical (company, role) row from
+    being re-inserted, so a decided row keeps its status. What it does not
+    stop is the same job arriving under a re-decorated title, which lands as
+    a fresh status='' row on the Uncategorized board. Callers filter on these
+    keys so a decision survives re-posting.
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT company_name, role_title FROM job_matches "
+            f"WHERE status IN ({','.join('?' * len(DECIDED_STATUSES))})",
+            DECIDED_STATUSES,
+        ).fetchall()
+        return {_canon_job_key(r[0], r[1]) for r in rows}
+    finally:
+        conn.close()
+
+
+def get_decided_job_urls() -> set[str]:
+    """Normalised posting URLs the user has already decided about.
+
+    A second, independent identity for "this exact posting". Titles get
+    rewritten between re-posts; the posting URL usually doesn't, so this
+    catches re-posts that :func:`canon_role` can't — Airbnb's "Product
+    Manager" and "Product Manager, Passport" are one LinkedIn posting.
+    Index pages resolve to "" in :func:`canon_url` and are never keys.
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT url FROM job_matches "
+            f"WHERE status IN ({','.join('?' * len(DECIDED_STATUSES))})",
+            DECIDED_STATUSES,
+        ).fetchall()
+        return {u for u in (canon_url(r[0]) for r in rows) if u}
     finally:
         conn.close()
 
@@ -264,6 +430,8 @@ def insert_job_matches(jobs: list) -> int:
     if not jobs:
         return 0
     tombstoned = get_deleted_job_keys()
+    decided = get_decided_job_keys()
+    decided_urls = get_decided_job_urls()
     conn = _connect()
     count = 0
     try:
@@ -282,9 +450,19 @@ def insert_job_matches(jobs: list) -> int:
                     j.get("source", ""), j.get("status", ""),
                     j.get("date_found", datetime.now().strftime("%Y-%m-%d")),
                 )
-            # values[0] = company_name, values[2] = role_title for both branches
-            if _job_key(values[0], values[2]) in tombstoned:
+            # values[0] = company_name, values[2] = role_title,
+            # values[4] = url, values[7] = status
+            if _canon_job_key(values[0], values[2]) in tombstoned:
                 continue
+            # Only suppress rows arriving *undecided*: those are the ones that
+            # would land on the Uncategorized board. A caller inserting with a
+            # status already set (the dashboard's "Add Applied" form) is making
+            # a deliberate record and must not be silently dropped.
+            if not (values[7] or "").strip():
+                if _canon_job_key(values[0], values[2]) in decided:
+                    continue
+                if canon_url(values[4]) in decided_urls:
+                    continue
             try:
                 conn.execute(
                     """INSERT INTO job_matches

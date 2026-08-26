@@ -21,6 +21,7 @@ from datetime import datetime
 
 import requests
 
+import database
 from config_loader import load_config
 
 _UA = {
@@ -70,9 +71,17 @@ def main(dry_run: bool = False) -> int:
     db = _db_path()
     con = sqlite3.connect(db)
     con.row_factory = sqlite3.Row
+    # Never sweep a job the user has already decided about. A posting you
+    # applied to is *expected* to 404 once it is filled, and deleting the row
+    # here would drop the only local record of that decision — after which the
+    # append-only cloud DB re-offers the job as a fresh Uncategorized row on
+    # the next sync. Decided rows are kept regardless of link health.
+    placeholders = ",".join("?" * len(database.DECIDED_STATUSES))
     rows = [dict(r) for r in con.execute(
         "SELECT id, company_name, role_title, url FROM job_matches "
-        "WHERE TRIM(COALESCE(url,'')) <> ''"
+        "WHERE TRIM(COALESCE(url,'')) <> '' "
+        f"AND COALESCE(status,'') NOT IN ({placeholders})",
+        database.DECIDED_STATUSES,
     ).fetchall()]
 
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -96,8 +105,15 @@ def main(dry_run: bool = False) -> int:
     if dead and not dry_run:
         con.executemany("DELETE FROM job_matches WHERE id = ?",
                         [(row["id"],) for row, _ in dead])
+        # Tombstone every pruned row. Without this the cloud DB, which never
+        # learns about local deletions, re-inserts each one as Uncategorized
+        # on the next sync — the sweep would undo itself every morning.
+        con.executemany(
+            "INSERT OR IGNORE INTO deleted_jobs (company_name, role_title) VALUES (?, ?)",
+            [(row["company_name"], row["role_title"]) for row, _ in dead],
+        )
         con.commit()
-        print(f"  removed {len(dead)} dead posting(s); "
+        print(f"  removed {len(dead)} dead posting(s) and tombstoned them; "
               f"{con.execute('SELECT COUNT(*) FROM job_matches').fetchone()[0]} rows remain")
     elif dead:
         print(f"  dry-run: would remove {len(dead)} posting(s)")

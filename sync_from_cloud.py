@@ -25,6 +25,7 @@ from pathlib import Path
 
 import re
 
+import database
 from filters import _company_excluded, _excluded_company_patterns
 
 REPO_DIR = Path(__file__).parent
@@ -111,8 +112,8 @@ def _column_names(conn: sqlite3.Connection, table: str) -> list[str]:
 def _job_tombstones(local: sqlite3.Connection) -> set[tuple[str, str]]:
     """(company, role) keys the user has deleted locally — never re-add these.
 
-    Lower/stripped so matching is case- and whitespace-insensitive, mirroring
-    the COLLATE NOCASE unique index on job_matches.
+    Canonicalised so a deleted posting stays deleted when it comes back under
+    a re-decorated title, matching how decided rows are keyed below.
     """
     has_table = local.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='deleted_jobs'"
@@ -120,18 +121,57 @@ def _job_tombstones(local: sqlite3.Connection) -> set[tuple[str, str]]:
     if not has_table:
         return set()
     return {
-        ((c or "").lower().strip(), (r or "").lower().strip())
+        (database.canon_company(c), database.canon_role(r))
         for c, r in local.execute("SELECT company_name, role_title FROM deleted_jobs")
     }
 
 
+def _decided_keys(local: sqlite3.Connection) -> set[tuple[str, str]]:
+    """(company, canonical-role) pairs the user has already decided about.
+
+    The cloud DB is append-only and never learns about local status changes,
+    so it re-offers every job it has ever seen with status=''. An identical
+    (company, role) is stopped by the unique index, but a re-decorated title
+    is not — it lands back on the Uncategorized board. These keys close that.
+    """
+    return {
+        (database.canon_company(c), database.canon_role(r))
+        for c, r in local.execute(
+            "SELECT company_name, role_title FROM job_matches "
+            f"WHERE status IN ({','.join('?' * len(database.DECIDED_STATUSES))})",
+            database.DECIDED_STATUSES,
+        )
+    }
+
+
+def _decided_urls(local: sqlite3.Connection) -> set[str]:
+    """Normalised posting URLs already decided about — a second identity.
+
+    Titles get rewritten between re-posts; the posting URL usually does not.
+    Careers-index URLs resolve to "" and are never keys, so this can't block
+    an unrelated role that happens to share a company careers page.
+    """
+    urls = (
+        database.canon_url(u)
+        for (u,) in local.execute(
+            "SELECT url FROM job_matches "
+            f"WHERE status IN ({','.join('?' * len(database.DECIDED_STATUSES))})",
+            database.DECIDED_STATUSES,
+        )
+    )
+    return {u for u in urls if u}
+
+
 def _merge_table(cloud: sqlite3.Connection, local: sqlite3.Connection, table: str,
                  tombstones: set[tuple[str, str]] | None = None,
-                 excl_co_patterns: list | None = None) -> tuple[int, int, int]:
+                 excl_co_patterns: list | None = None,
+                 decided: set[tuple[str, str]] | None = None,
+                 decided_urls: set[str] | None = None) -> tuple[int, int, int]:
     """Copy rows from cloud → local. Returns (inserted, skipped_duplicates, blocked).
 
     ``blocked`` counts rows skipped because they were deleted locally
-    (tombstoned) or belong to an excluded company.
+    (tombstoned), already decided (Applied / Not Interested), or belong to an
+    excluded company.
     """
     cols = _column_names(cloud, table)
     if not cols:
@@ -145,6 +185,10 @@ def _merge_table(cloud: sqlite3.Connection, local: sqlite3.Connection, table: st
     ri = insertable.index("role_title") if "role_title" in insertable else None
     can_tombstone = tombstones is not None and ci is not None and ri is not None
     can_exclude_co = bool(excl_co_patterns) and ci is not None
+    si = insertable.index("status") if "status" in insertable else None
+    ui = insertable.index("url") if "url" in insertable else None
+    can_skip_decided = decided is not None and ci is not None and ri is not None
+    can_skip_url = bool(decided_urls) and ui is not None
 
     rows = cloud.execute(
         f"SELECT {col_list} FROM {table}"
@@ -156,8 +200,20 @@ def _merge_table(cloud: sqlite3.Connection, local: sqlite3.Connection, table: st
             blocked += 1
             continue
         if can_tombstone:
-            key = ((row[ci] or "").lower().strip(), (row[ri] or "").lower().strip())
+            key = (database.canon_company(row[ci]), database.canon_role(row[ri]))
             if key in tombstones:
+                blocked += 1
+                continue
+        # Only rows arriving undecided can land on the Uncategorized board;
+        # a cloud row that already carries a status is left to the unique
+        # index, which preserves whatever the local row already says.
+        if not (si is None or (row[si] or "").strip()):
+            if can_skip_decided:
+                ckey = (database.canon_company(row[ci]), database.canon_role(row[ri]))
+                if ckey in decided:
+                    blocked += 1
+                    continue
+            if can_skip_url and database.canon_url(row[ui]) in decided_urls:
                 blocked += 1
                 continue
         try:
@@ -194,6 +250,8 @@ def main() -> int:
         local = sqlite3.connect(LOCAL_DB)
         try:
             tombstones = _job_tombstones(local)
+            decided = _decided_keys(local)
+            decided_urls = _decided_urls(local)
             excl_co = _excluded_company_patterns_from_config()
             for table in PIPELINE_TABLES:
                 is_jobs = table == "job_matches"
@@ -201,10 +259,13 @@ def main() -> int:
                     cloud, local, table,
                     tombstones=tombstones if is_jobs else None,
                     excl_co_patterns=excl_co if is_jobs else None,
+                    decided=decided if is_jobs else None,
+                    decided_urls=decided_urls if is_jobs else None,
                 )
                 msg = f"  {table}: +{inserted} new, {skipped} already present"
                 if blocked:
-                    msg += f", {blocked} skipped (deleted locally / excluded company)"
+                    msg += (f", {blocked} skipped (deleted locally / already "
+                            f"decided / excluded company)")
                 print(msg)
         finally:
             cloud.close()

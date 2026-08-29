@@ -163,6 +163,33 @@ def get_existing_job_keys() -> set[str]:
         conn.close()
 
 
+def get_existing_canon_keys() -> set[str]:
+    """Canonical (company|role) keys for every row, at any status.
+
+    The unique index compares literal strings, so the same opening syndicated
+    to two boards lands twice whenever the spelling differs at all — "ALSO."
+    from LinkedIn and "Also" from Next Play are one job. Callers check this
+    before inserting so a posting is stored once regardless of which feed
+    reached it first.
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute("SELECT company_name, role_title FROM job_matches").fetchall()
+        return {_canon_job_key(r[0], r[1]) for r in rows}
+    finally:
+        conn.close()
+
+
+def get_existing_canon_urls() -> set[str]:
+    """Normalised posting URLs already stored, at any status."""
+    conn = _connect()
+    try:
+        rows = conn.execute("SELECT url FROM job_matches").fetchall()
+        return {u for u in (canon_url(r[0]) for r in rows) if u}
+    finally:
+        conn.close()
+
+
 def get_deleted_job_keys() -> set[str]:
     """Tombstoned canonical (company|role) keys — jobs the user has deleted.
 
@@ -240,6 +267,22 @@ def canon_role(role_title: str) -> str:
             break
     t = re.sub(r"[^a-z0-9]+", " ", t.lower())
     return re.sub(r"\s+", " ", t).strip()
+
+
+_ZERO_WIDTH = re.compile(r"[​‌‍﻿]")
+
+
+def clean_text(value: str) -> str:
+    """Collapse exotic whitespace to plain single spaces.
+
+    Feeds paste non-breaking and zero-width characters into names and titles —
+    Lenny's Jobs sends "Komodo\\xa0Health", NewPMJobs "Sr.\\xa0 Product Manager".
+    The unique index on (company_name, role_title) is COLLATE NOCASE, which
+    folds case but not whitespace, so "Komodo\\xa0Health" and "Komodo Health"
+    read as different employers and both rows land. Normalising on write keeps
+    that index doing the job it was added for.
+    """
+    return re.sub(r"\s+", " ", _ZERO_WIDTH.sub("", value or "")).strip()
 
 
 def canon_company(company_name: str) -> str:
@@ -432,6 +475,10 @@ def insert_job_matches(jobs: list) -> int:
     tombstoned = get_deleted_job_keys()
     decided = get_decided_job_keys()
     decided_urls = get_decided_job_urls()
+    # Seeded from the table, then extended as this batch inserts, so a feed
+    # that carries the same job twice in one run stores it once.
+    seen_keys = get_existing_canon_keys()
+    seen_urls = get_existing_canon_urls()
     conn = _connect()
     count = 0
     try:
@@ -452,16 +499,25 @@ def insert_job_matches(jobs: list) -> int:
                 )
             # values[0] = company_name, values[2] = role_title,
             # values[4] = url, values[7] = status
-            if _canon_job_key(values[0], values[2]) in tombstoned:
+            values = list(values)
+            values[0] = clean_text(values[0])
+            values[2] = clean_text(values[2])
+            values = tuple(values)
+
+            ckey = _canon_job_key(values[0], values[2])
+            curl = canon_url(values[4])
+            if ckey in tombstoned:
                 continue
             # Only suppress rows arriving *undecided*: those are the ones that
             # would land on the Uncategorized board. A caller inserting with a
             # status already set (the dashboard's "Add Applied" form) is making
             # a deliberate record and must not be silently dropped.
             if not (values[7] or "").strip():
-                if _canon_job_key(values[0], values[2]) in decided:
+                if ckey in decided or (curl and curl in decided_urls):
                     continue
-                if canon_url(values[4]) in decided_urls:
+                # Cross-source duplicate: the same opening already stored under
+                # a different spelling, or reached through a second feed.
+                if ckey in seen_keys or (curl and curl in seen_urls):
                     continue
             try:
                 conn.execute(
@@ -472,6 +528,9 @@ def insert_job_matches(jobs: list) -> int:
                     values,
                 )
                 count += 1
+                seen_keys.add(ckey)
+                if curl:
+                    seen_urls.add(curl)
             except sqlite3.IntegrityError:
                 pass
         conn.commit()

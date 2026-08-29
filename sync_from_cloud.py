@@ -194,8 +194,31 @@ def _merge_table(cloud: sqlite3.Connection, local: sqlite3.Connection, table: st
         f"SELECT {col_list} FROM {table}"
     ).fetchall()
 
+    # Cross-source duplicate guard. The unique index compares literal strings,
+    # so one opening syndicated to two boards lands twice whenever the spelling
+    # differs — "Komodo\xa0Health" from Lenny's and "Komodo Health" from
+    # Jobright. Seeded from what is already stored, extended as we insert.
+    seen_keys: set[tuple[str, str]] = set()
+    seen_urls: set[str] = set()
+    dedupe_jobs = table == "job_matches" and ci is not None and ri is not None
+    if dedupe_jobs:
+        for c, r, u in local.execute(
+            "SELECT company_name, role_title, COALESCE(url,'') FROM job_matches"
+        ):
+            seen_keys.add((database.canon_company(c), database.canon_role(r)))
+            cu = database.canon_url(u)
+            if cu:
+                seen_urls.add(cu)
+
     inserted = skipped = blocked = 0
     for row in rows:
+        if ci is not None or ri is not None:
+            row = list(row)
+            if ci is not None:
+                row[ci] = database.clean_text(row[ci])
+            if ri is not None:
+                row[ri] = database.clean_text(row[ri])
+            row = tuple(row)
         if can_exclude_co and _company_excluded(row[ci] or "", excl_co_patterns):
             blocked += 1
             continue
@@ -216,12 +239,24 @@ def _merge_table(cloud: sqlite3.Connection, local: sqlite3.Connection, table: st
             if can_skip_url and database.canon_url(row[ui]) in decided_urls:
                 blocked += 1
                 continue
+            # Same opening, second feed — store it once.
+            if dedupe_jobs:
+                ckey = (database.canon_company(row[ci]), database.canon_role(row[ri]))
+                curl = database.canon_url(row[ui]) if ui is not None else ""
+                if ckey in seen_keys or (curl and curl in seen_urls):
+                    blocked += 1
+                    continue
         try:
             local.execute(
                 f"INSERT INTO {table} ({col_list}) VALUES ({placeholders})",
                 row,
             )
             inserted += 1
+            if dedupe_jobs:
+                seen_keys.add((database.canon_company(row[ci]), database.canon_role(row[ri])))
+                cu = database.canon_url(row[ui]) if ui is not None else ""
+                if cu:
+                    seen_urls.add(cu)
         except sqlite3.IntegrityError:
             skipped += 1
     local.commit()

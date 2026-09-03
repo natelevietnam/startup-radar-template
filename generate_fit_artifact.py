@@ -38,6 +38,8 @@ import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+import database
+
 ROOT = Path(__file__).resolve().parent
 DB = ROOT / "startup_radar.db"
 DOSSIERS = ROOT / "fit_dossiers.json"
@@ -116,6 +118,54 @@ def _tombstoned(conn: sqlite3.Connection) -> set[tuple[str, str]]:
         return set()
 
 
+# --- already-decided matching -------------------------------------------------
+# The matcher itself lives in database.py, beside the canonicalisation it
+# extends, so the Streamlit board and any future screen share one definition
+# rather than each growing their own. See `database.decided_duplicate` for why
+# it returns a confidence instead of a boolean.
+#
+# This view honours that confidence: a provable duplicate is dropped, an
+# unprovable one is kept and labelled. Hiding the uncertain ones would bury
+# real openings — Traba runs a PM and a Senior PM on the same team.
+
+# Statuses that mean "you are already in this company's pipeline". Applications
+# tracked only in tracker_status (company-level, and the only record when one
+# was logged straight into the tracker) surface as a card badge — see
+# _engaged_companies.
+ENGAGED = {"applied", "round 1 interview", "round 2 interview", "final round",
+           "offer", "rejected"}
+
+
+
+def _engaged_companies(conn: sqlite3.Connection) -> dict[str, tuple[str, str]]:
+    """Companies you are already in process with -> (status, role).
+
+    Sourced from both `job_matches` (per-opening) and `tracker_status`
+    (company-level, and the only record when an application was logged straight
+    into the tracker). Drives the card badge, not suppression: applying to one
+    role at Visa says nothing about its eight other openings, but you should be
+    able to see it without opening the tracker.
+    """
+    out: dict[str, tuple[str, str]] = {}
+    # tracker_status first: it is the live application tracker and carries the
+    # current outcome (Rejected, Round 1 Interview). job_matches only ever
+    # records "Applied", so it must not shadow a progression already logged.
+    try:
+        for c, st, r in conn.execute(
+            "select company_name, status, role from tracker_status"
+        ):
+            if (st or "").strip().lower() in ENGAGED:
+                out.setdefault(_norm(c), ((st or "").strip(), (r or "").strip()))
+    except sqlite3.OperationalError:
+        pass
+    for c, r, st in conn.execute(
+        "select company_name, role_title, status from job_matches where status <> ''"
+    ):
+        if (st or "").strip().lower() in ENGAGED:
+            out.setdefault(_norm(c), ((st or "").strip(), (r or "").strip()))
+    return out
+
+
 def _comp_range(text: str) -> tuple[int | None, int | None]:
     """Pull a $ salary range out of a free-text blob; returns (min,max) or (None,None)."""
     nums = [int(n.replace(",", "")) for n in re.findall(r"\$\s*([\d][\d,]{3,})", text or "")]
@@ -168,6 +218,29 @@ def _pending_flags(location: str, comp_max: int | None) -> tuple[list[str], str]
     return flags, clears
 
 
+def _attach_priority(d: dict, slot: dict) -> None:
+    """Carry the Low-priority marks onto a card.
+
+    Priority is per opening but the board is per company, so the distinction
+    matters: a company is only *deprioritized* — and only sorts down — when
+    every one of its open roles is marked Low. A company with one Low role
+    among several keeps its rank and just names the role, because burying a
+    live opening behind a mark you made about a different one is the same
+    mistake the duplicate matcher is careful to avoid.
+    """
+    # A company's priority is the best its open roles carry: one High opening is
+    # a reason to look, even if the others are Medium. Ranking is unaffected —
+    # the board ranks on fit, and this only labels how actionable that fit is.
+    order = {"High": 0, "Medium": 1, "Low": 2}
+    ranked = sorted((p for p in slot["prios"] if p in order), key=lambda p: order[p])
+    if ranked:
+        d["priority"] = ranked[0]
+    if not slot["lowRoles"]:
+        return
+    d["lowRoles"] = slot["lowRoles"]
+    d["deprioritized"] = len(slot["lowRoles"]) == len(slot["roles"])
+
+
 def build_data() -> tuple[list[dict], dict]:
     dossiers = {(_norm(d["co"])): d for d in json.loads(DOSSIERS.read_text())}
     conn = sqlite3.connect(DB)
@@ -176,11 +249,20 @@ def build_data() -> tuple[list[dict], dict]:
     pinned = _pinned_companies()
     tombs = _tombstoned(conn)
     pinned_status: dict[str, str] = {}
+    suppressed: list[dict] = []
 
     rows = conn.execute(
-        "select company_name, role_title, location, url, company_description, status "
+        "select company_name, role_title, location, url, company_description, status, "
+        "       coalesce(priority,'') as priority "
         "from job_matches"
     ).fetchall()
+
+    engaged = _engaged_companies(conn)
+    # Every row already decided about — applied, not interested, interested,
+    # wishlist — grouped by company for the cross-source duplicate check.
+    # Not-interested counts: re-screening a role you already rejected is the
+    # same wasted review as re-screening one you already applied to.
+    decided_by_co = database.get_decided_rows_by_company()
 
     # Group current Uncategorized rows by company.
     by_co: dict[str, dict] = {}
@@ -194,8 +276,32 @@ def build_data() -> tuple[list[dict], dict]:
             continue
         if (key, (r["role_title"] or "").strip().lower()) in tombs:
             continue
+        # Already decided about, reached again through another source. Only a
+        # provable match is dropped; an unprovable one rides along as a label
+        # so the call stays yours. Pinned companies keep everything.
+        dupe = None
+        if key not in pinned:
+            dupe = database.decided_duplicate(
+                r["role_title"], r["url"],
+                decided_by_co.get(database.canon_company(r["company_name"]), []),
+            )
+            if dupe and dupe["certain"]:
+                suppressed.append({
+                    "co": r["company_name"], "role": r["role_title"],
+                    "appliedRole": dupe["role"], "why": dupe["reason"],
+                })
+                continue
         slot = by_co.setdefault(key, {"name": r["company_name"], "roles": [], "locs": [],
-                                      "urls": [], "descs": []})
+                                      "urls": [], "descs": [], "maybeDupes": [],
+                                      "lowRoles": [], "prios": []})
+        slot["prios"].append((r["priority"] or "").strip())
+        if (r["priority"] or "").strip().lower() == "low" and r["role_title"]:
+            slot["lowRoles"].append(r["role_title"])
+        if dupe:
+            slot["maybeDupes"].append({
+                "role": r["role_title"], "status": dupe["status"],
+                "decidedRole": dupe["role"], "why": dupe["reason"],
+            })
         if r["role_title"] and r["role_title"] not in slot["roles"]:
             slot["roles"].append(r["role_title"])
         if r["location"]:
@@ -217,6 +323,11 @@ def build_data() -> tuple[list[dict], dict]:
             d["openRoles"] = open_roles        # live roles from the pipeline
             if key in pinned:
                 d["pinned"] = pinned_status.get(key, "")
+            if key in engaged:
+                d["engaged"] = {"status": engaged[key][0], "role": engaged[key][1]}
+            if slot["maybeDupes"]:
+                d["maybeDupes"] = slot["maybeDupes"]
+            _attach_priority(d, slot)
             new_roles = _new_since_research(d, open_roles)
             if new_roles:
                 score = d.get("score")
@@ -249,6 +360,16 @@ def build_data() -> tuple[list[dict], dict]:
                 "headline": "New in your pipeline — not yet deep-researched.",
                 "snap": snap, "flags": flags, "url": slot["urls"][0] if slot["urls"] else "",
                 "search0": desc,
+                **({"engaged": {"status": engaged[key][0], "role": engaged[key][1]}}
+                   if key in engaged else {}),
+                **({"maybeDupes": slot["maybeDupes"]} if slot["maybeDupes"] else {}),
+                **({"lowRoles": slot["lowRoles"],
+                    "deprioritized": len(slot["lowRoles"]) == len(open_roles)}
+                   if slot["lowRoles"] else {}),
+                **({"priority": sorted(
+                        (p for p in slot["prios"] if p in ("High", "Medium", "Low")),
+                        key=lambda p: {"High": 0, "Medium": 1, "Low": 2}[p])[0]}
+                   if any(p in ("High", "Medium", "Low") for p in slot["prios"]) else {}),
             })
             pending_cos.append(slot["name"])
 
@@ -279,11 +400,26 @@ def build_data() -> tuple[list[dict], dict]:
     if flagged_cos:
         note_bits.append("<b>Comp gate:</b> posted base may fall under ~$150K for " +
                          ", ".join(sorted(set(flagged_cos))) + ".")
+    in_process = sorted({d["co"] for d in data if d.get("engaged")})
+    if in_process:
+        note_bits.append("<b>Already in process</b> at " + ", ".join(in_process) +
+                         " — those cards carry a badge naming the role you applied to. "
+                         "Their other openings are still live and stay on the board.")
+    if suppressed:
+        note_bits.append("<b>Dropped as duplicates</b> of roles you have already decided about: " +
+                         ", ".join(f"{x['co']} — {x['role']}" for x in suppressed) + ".")
+    maybes = [m for d in data for m in d.get("maybeDupes", [])]
+    if maybes:
+        note_bits.append(
+            f"<b>{len(maybes)} possible duplicate(s)</b> of roles you already decided about are "
+            "still listed, marked on their cards. They are kept rather than dropped because "
+            "nothing proves the match — a company can run two tiers of the same role at once.")
     note_bits.append("This view is generated from your <b>Uncategorized Job Matches</b>; companies you "
                      "categorize (interested/applied/etc.) drop off automatically.")
     gate_note = " ".join(note_bits)
 
-    meta = {"counts": counts, "gate_note": gate_note, "stale": stale}
+    meta = {"counts": counts, "gate_note": gate_note, "stale": stale,
+            "suppressed": suppressed}
     return data, meta
 
 

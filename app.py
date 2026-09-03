@@ -34,6 +34,7 @@ except Exception as e:
 database.init_db()
 
 STATUS_OPTIONS = ["", "Interested", "Not Interested", "Applied", "Wishlist"]
+PRIORITY_OPTIONS = ["", "Low", "Medium", "High"]
 ACTIVITY_TYPES = ["Emailed", "Applied", "Called", "Meeting", "Follow-up", "Interview", "Note"]
 TRACKER_STATUS_OPTIONS = ["In Progress", "Applied", "Gone Cold"]
 APPLIED_STATUS_OPTIONS = [
@@ -515,6 +516,17 @@ elif page == "Job Matches":
         "Refreshes when you open Startup Radar."
     )
 
+    # Cut List Artifact: the screening ledger for new arrivals. Configured in
+    # config.yaml (output.cut_list_url) for the same reason the PM-Fit URL is —
+    # it is account-specific — and hidden entirely when that key is blank.
+    _cut_list_url = (cfg.get("output", {}) or {}).get("cut_list_url", "")
+    if _cut_list_url.strip():
+        st.markdown(
+            f"✂️ **[Open the Cut List]({_cut_list_url.strip()})** "
+            "— screening verdicts on the newest arrivals, with a Keep button on "
+            "each row. Your saved review is what Claude reads back."
+        )
+
     if st.button("+ Add Role", key="add_role_btn"):
         st.session_state["show_add_role"] = not st.session_state.get("show_add_role", False)
 
@@ -552,7 +564,53 @@ elif page == "Job Matches":
                 else:
                     st.warning(f"Role '{ar_role.strip()}' at '{company_name}' already exists.")
 
-    job_search = st.text_input("Search", placeholder="Company name or role...", key="job_search")
+    # Priority orders High > Medium > Low, which is not alphabetical. Clicking
+    # the grid's own column header sorts the text and gives High, Low, Medium —
+    # so the ordering is applied to the frame here instead, before the editor
+    # ever sees it.
+    _PRIORITY_RANK = {"High": 0, "Medium": 1, "Low": 2}
+    _SORTS = {
+        "Date found (newest first)": None,
+        "Priority: High → Low": False,
+        "Priority: Low → High": True,
+    }
+
+    # Per-column filters. st.data_editor has no column-header filter UI and
+    # streamlit-aggrid would mean a new dependency plus losing column_config and
+    # the edit-persistence path, so the filters live in a row above the grid and
+    # each one is scoped to a single column. They AND together.
+    _jf1, _jf2 = st.columns([3, 1])
+    with _jf1:
+        job_search = st.text_input(
+            "Search (company or role)", placeholder="Searches both columns at once...",
+            key="job_search")
+    with _jf2:
+        job_sort = st.selectbox("Sort by", list(_SORTS), key="job_sort")
+
+    with st.expander("Filter by column", expanded=bool(
+            st.session_state.get("job_priority") or st.session_state.get("f_company")
+            or st.session_state.get("f_role") or st.session_state.get("f_loc")
+            or st.session_state.get("f_source"))):
+        _c1, _c2, _c3 = st.columns(3)
+        with _c1:
+            f_company = st.multiselect(
+                "Company", sorted(df_jobs["Company"].dropna().unique()), key="f_company")
+            f_role = st.text_input("Role contains", key="f_role")
+        with _c2:
+            f_loc = st.text_input("Location contains", key="f_loc")
+            job_priority = st.multiselect(
+                "Priority", ["High", "Medium", "Low", "Unranked"], key="job_priority",
+                help="Unranked covers rows with no priority yet — usually new arrivals.")
+        with _c3:
+            _srcs = sorted(x for x in df_jobs.get("Source", pd.Series(dtype=str))
+                           .dropna().unique()) if "Source" in df_jobs.columns else []
+            f_source = st.multiselect("Source", _srcs, key="f_source") if _srcs else []
+            f_since = st.text_input("Found on or after (YYYY-MM-DD)", key="f_since")
+        if st.button("Clear column filters", key="clear_job_filters"):
+            for _k in ("f_company", "f_role", "f_loc", "job_priority", "f_source", "f_since"):
+                st.session_state.pop(_k, None)
+            st.rerun()
+
     filtered_jobs = df_jobs.copy()
     if job_search:
         mask = (
@@ -561,13 +619,51 @@ elif page == "Job Matches":
         )
         filtered_jobs = filtered_jobs[mask]
 
+    if f_company:
+        filtered_jobs = filtered_jobs[filtered_jobs["Company"].isin(f_company)]
+    if f_role:
+        filtered_jobs = filtered_jobs[
+            filtered_jobs["Role"].str.contains(f_role, case=False, na=False)]
+    if f_loc:
+        filtered_jobs = filtered_jobs[
+            filtered_jobs["Location"].str.contains(f_loc, case=False, na=False)]
+    if f_source and "Source" in filtered_jobs.columns:
+        filtered_jobs = filtered_jobs[filtered_jobs["Source"].isin(f_source)]
+    if f_since.strip():
+        filtered_jobs = filtered_jobs[
+            filtered_jobs["Date Found"].fillna("").astype(str) >= f_since.strip()]
+
+    if job_priority:
+        _p = filtered_jobs["Priority"].fillna("").str.strip()
+        _want = [x for x in job_priority if x != "Unranked"]
+        _mask = _p.isin(_want)
+        if "Unranked" in job_priority:
+            _mask = _mask | ~_p.isin(_PRIORITY_RANK)
+        filtered_jobs = filtered_jobs[_mask]
+
+    st.caption(f"{len(filtered_jobs)} of {len(df_jobs)} rows match the current filters.")
+
+    _reverse = _SORTS[job_sort]
+    if _reverse is not None:
+        # Unranked rows sort last either way — an absent priority is not a low
+        # one, and floating them to the top of "Low → High" would bury the
+        # rows you actually deprioritised.
+        _key = filtered_jobs["Priority"].fillna("").str.strip().map(
+            lambda v: _PRIORITY_RANK.get(v, 99))
+        if _reverse:
+            _key = _key.map(lambda v: v if v == 99 else -v)
+        filtered_jobs = filtered_jobs.assign(_prio_key=_key).sort_values(
+            ["_prio_key", "Date Found"], ascending=[True, False]).drop(columns="_prio_key")
+
     job_status_lower = filtered_jobs["Status"].str.strip().str.lower()
     wishlist_jobs = filtered_jobs[job_status_lower == "wishlist"]
     interested_jobs = filtered_jobs[job_status_lower == "interested"]
     ni_jobs = filtered_jobs[job_status_lower == "not interested"]
     uncategorized_jobs = filtered_jobs[~job_status_lower.isin(["applied", "wishlist", "interested", "not interested"])]
 
-    display_cols = [c for c in filtered_jobs.columns if c != "Priority"]
+    # Priority was hidden because nothing ever wrote it. It now carries the
+    # deprioritisation pass, and _persist_job_changes saves edits to it.
+    display_cols = list(filtered_jobs.columns)
 
     # Recency: flag postings found within the last 30 days so fresh roles are
     # obvious during triage (grids already sort Date Found DESC).
@@ -577,6 +673,32 @@ elif page == "Job Matches":
         frame = frame.copy()
         recent = frame["Date Found"].fillna("").astype(str) >= _recent_cutoff
         frame.insert(0, "\U0001f195", recent.map(lambda x: "\U0001f195" if x else ""))
+        return frame
+
+    def _add_dupe_col(frame):
+        """Mark rows that look like a job already applied to or rejected.
+
+        Only unprovable matches reach here — database.insert_job_matches already
+        drops the provable ones at ingest. They are flagged rather than filtered
+        because nothing establishes the match: a company can run a PM and a
+        Senior PM on one team, and hiding the row would lose a live req.
+        """
+        frame = frame.copy()
+        decided = database.get_decided_rows_by_company()
+        if not decided:
+            frame["\u26a0\ufe0f Dupe?"] = ""
+            return frame
+
+        def _mark(row):
+            hit = database.decided_duplicate(
+                row["Role"], row.get("Link", "") or "",
+                decided.get(database.canon_company(row["Company"]), []),
+            )
+            if not hit or hit["certain"]:
+                return ""
+            return f"{hit['status']}: {hit['role']}"
+
+        frame["\u26a0\ufe0f Dupe?"] = frame.apply(_mark, axis=1)
         return frame
 
     def _add_job_connections_col(frame):
@@ -590,9 +712,19 @@ elif page == "Job Matches":
 
     _job_col_config = {
         "Status": st.column_config.SelectboxColumn("Status", options=STATUS_OPTIONS, width="medium"),
+        "Source": st.column_config.TextColumn(
+            "Source", width="small", disabled=True,
+            help="Which feed served this posting \u2014 read-only, it comes from ingest"),
+        "Priority": st.column_config.SelectboxColumn(
+            "Priority", options=PRIORITY_OPTIONS, width="small",
+            help="Ranking only \u2014 a Low row stays in the queue, it just sorts down."),
         "Link": st.column_config.LinkColumn("Link", display_text="Apply"),
         "Connections": st.column_config.TextColumn("Connections", width="medium"),
         "\U0001f195": st.column_config.TextColumn("\U0001f195", width="small", help="Found in the last 30 days"),
+        "\u26a0\ufe0f Dupe?": st.column_config.TextColumn(
+            "\u26a0\ufe0f Dupe?", width="medium",
+            help="Looks like a job you already decided about, but nothing proves it — "
+                 "check the posting before applying."),
         "\U0001f5d1\ufe0f": st.column_config.CheckboxColumn("\U0001f5d1\ufe0f", width="small"),
     }
 
@@ -605,6 +737,16 @@ elif page == "Job Matches":
                 database.delete_job_match(original_df.loc[idx, "Company"], original_df.loc[idx, "Role"])
                 changed = True
                 continue
+            # Priority is ranking only, saved independently of Status so a
+            # re-rank never implies a decision.
+            if "Priority" in edited_df.columns and "Priority" in original_df.columns:
+                old_p, new_p = original_df.loc[idx, "Priority"], edited_df.loc[idx, "Priority"]
+                if (old_p or "") != (new_p or ""):
+                    database.update_job_priority(
+                        original_df.loc[idx, "Company"], original_df.loc[idx, "Role"],
+                        new_p or "",
+                    )
+                    changed = True
             old = original_df.loc[idx, "Status"]
             new = edited_df.loc[idx, "Status"]
             if old != new:
@@ -675,7 +817,7 @@ elif page == "Job Matches":
         st.caption("Tick \U0001f5d1️ to select rows, then use the button below to "
                    "delete just those. With nothing ticked, the button clears the whole list.")
         edited = st.data_editor(
-            _add_delete_col(_add_recency_col(_add_job_connections_col(uncategorized_jobs[display_cols])), first=True),
+            _add_delete_col(_add_recency_col(_add_dupe_col(_add_job_connections_col(uncategorized_jobs[display_cols]))), first=True),
             column_config=_job_col_config, hide_index=True, use_container_width=True,
             disabled=[], key="unc_jobs_editor",
         )

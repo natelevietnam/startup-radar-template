@@ -15,9 +15,12 @@ dashboard reads. Safe to run by hand any time.
 from __future__ import annotations
 
 import concurrent.futures as cf
+import re
 import sqlite3
 import sys
+import time
 from datetime import datetime
+from urllib.parse import parse_qs, urlparse
 
 import requests
 
@@ -40,7 +43,137 @@ _DEAD_TXT = (
 )
 
 _TIMEOUT = 12
-_WORKERS = 12
+_WORKERS = 4  # low: LinkedIn 429s aggressively above this
+
+
+# --- ATS-specific probes -------------------------------------------------
+#
+# Two HTML-level blind spots motivated these (found 2026-08-27, both silently
+# keeping dead rows alive for weeks):
+#
+#   1. Wellfound's `?job_listing_slug=` form is a client-rendered shell that
+#      returns 200 and an identical ~243KB body for EVERY slug — including a
+#      slug that never existed. Its canonical `/jobs/<slug>` path does
+#      discriminate: 410 for a removed posting, 404 for one that never
+#      existed, 200 for a live one.
+#   2. A dead Greenhouse req redirects to `/<token>?error=true`, i.e. the
+#      board index, which is a 200 page with no closed-marker text.
+#
+# Where an ATS publishes a job-board API, ask it directly instead of reading
+# HTML: the answer is authoritative and immune to both problems. Each probe
+# returns (is_dead, reason) or None to mean "not my URL shape / can't tell",
+# in which case the caller falls through to the next probe and finally to the
+# generic HTML check.
+
+def _probe_greenhouse(url: str):
+    m = re.search(r"greenhouse\.io/(?:embed/job_app\?for=)?([^/?#]+)/jobs/(\d+)", url)
+    if not m:
+        return None
+    token, job_id = m.groups()
+    api = f"https://boards-api.greenhouse.io/v1/boards/{token}/jobs/{job_id}"
+    resp = requests.get(api, headers=_UA, timeout=_TIMEOUT)
+    if resp.status_code == 404:
+        # Confirm the board itself resolves; otherwise the token is simply
+        # wrong (some companies proxy Greenhouse under their own domain with
+        # a token we can't derive) and a 404 says nothing about the job.
+        board = requests.get(f"https://boards-api.greenhouse.io/v1/boards/{token}/jobs",
+                             headers=_UA, timeout=_TIMEOUT)
+        if board.status_code != 200:
+            return None
+        return True, "greenhouse-api 404"
+    if resp.status_code == 200:
+        return False, "greenhouse-api live"
+    return None
+
+
+def _probe_ashby(url: str):
+    m = re.search(r"jobs\.ashbyhq\.com/([^/?#]+)/([0-9a-f-]{36})", url)
+    if not m:
+        return None
+    org, posting_id = m.groups()
+    resp = requests.get(f"https://api.ashbyhq.com/posting-api/job-board/{org}",
+                        headers=_UA, timeout=_TIMEOUT)
+    if resp.status_code != 200:
+        return None
+    ids = {j.get("id") for j in resp.json().get("jobs", [])}
+    if not ids:
+        return None
+    return (posting_id not in ids,
+            "ashby-api not-on-board" if posting_id not in ids else "ashby-api live")
+
+
+def _probe_smartrecruiters(url: str):
+    m = re.search(r"jobs\.smartrecruiters\.com/([^/?#]+)/(\d+)", url)
+    if not m:
+        return None
+    company, posting_id = m.groups()
+    resp = requests.get(
+        f"https://api.smartrecruiters.com/v1/companies/{company}/postings/{posting_id}",
+        headers=_UA, timeout=_TIMEOUT)
+    if resp.status_code == 404:
+        return True, "smartrecruiters-api 404"
+    if resp.status_code == 200:
+        return False, "smartrecruiters-api live"
+    return None
+
+
+def _probe_wellfound(url: str):
+    if "wellfound.com" not in url:
+        return None
+    slug = parse_qs(urlparse(url).query).get("job_listing_slug", [None])[0]
+    if not slug:
+        m = re.search(r"/jobs/([^/?#]+)", url)
+        slug = m.group(1) if m else None
+    if not slug:
+        return None
+    resp = requests.get(f"https://wellfound.com/jobs/{slug}", headers=_UA,
+                        timeout=_TIMEOUT, allow_redirects=True)
+    if resp.status_code == 410:
+        return True, "wellfound 410 Gone"
+    if resp.status_code == 404:
+        return True, "wellfound 404"
+    if resp.status_code == 200:
+        return False, "wellfound live"
+    return None
+
+
+def _probe_linkedin(url: str):
+    """LinkedIn rate-limits hard (429) but does discriminate once it answers.
+
+    Job URLs come in two shapes and BOTH must be handled — `/jobs/view/<id>`
+    and the slug form `/jobs/view/<slug>-at-<company>-<id>`. Matching only the
+    numeric form silently skipped every slug-form row.
+
+    A 429 returns None (unconfirmed → kept), never a dead verdict.
+    """
+    if "linkedin.com/jobs/view/" not in url:
+        return None
+    m = re.search(r"/jobs/view/(?:[\w-]*?-)?(\d{6,})/?", url)
+    if not m:
+        return None
+    target = f"https://www.linkedin.com/jobs/view/{m.group(1)}/"
+    # Budget generously. At 3 attempts / 5s the sweep 429'd out on two thirds of
+    # LinkedIn rows and reported them as unconfirmed, while a slower hand-run
+    # resolved every one of them as definitively dead or live.
+    for attempt in range(6):
+        resp = requests.get(target, headers=_UA, timeout=_TIMEOUT, allow_redirects=True)
+        if resp.status_code == 429:
+            time.sleep(8 * (attempt + 1))
+            continue
+        if resp.status_code in (404, 410):
+            return True, f"linkedin HTTP {resp.status_code}"
+        if resp.status_code == 200:
+            body = resp.text[:200_000].lower()
+            for marker in _DEAD_TXT:
+                if marker in body:
+                    return True, f"linkedin 200 but '{marker}'"
+            return False, "linkedin live"
+        return None
+    return None  # still throttled — unconfirmed, keep
+
+
+_PROBES = (_probe_greenhouse, _probe_ashby, _probe_smartrecruiters, _probe_wellfound,
+           _probe_linkedin)
 
 
 def _db_path() -> str:
@@ -51,12 +184,28 @@ def _db_path() -> str:
 def _classify(row: dict) -> tuple[dict, bool, str]:
     """Return (row, is_dead, reason). is_dead True only on strong signals."""
     url = row["url"]
+
+    # Ask the ATS's own API first where one exists. These are authoritative and
+    # sidestep both the JS-shell and the redirect-to-board-index problems that
+    # make the HTML check below unreliable on Wellfound and Greenhouse.
+    for probe in _PROBES:
+        try:
+            verdict = probe(url)
+        except Exception:
+            verdict = None  # network hiccup on a probe — fall through, never prune
+        if verdict is not None:
+            return row, verdict[0], verdict[1]
+
     try:
         resp = requests.get(url, headers=_UA, timeout=_TIMEOUT, allow_redirects=True)
         code = resp.status_code
         if code in (404, 410):
             return row, True, f"HTTP {code}"
         if code == 200:
+            # A dead Greenhouse req 302s to the board index as `?error=true`;
+            # the resulting page is a healthy 200 with no closed-marker text.
+            if "error=true" in resp.url:
+                return row, True, "redirected to board index (error=true)"
             body = resp.text[:200_000].lower()
             for marker in _DEAD_TXT:
                 if marker in body:
@@ -94,7 +243,9 @@ def main(dry_run: bool = False) -> int:
         for row, is_dead, reason in ex.map(_classify, rows):
             if is_dead:
                 dead.append((row, reason))
-            elif reason not in ("HTTP 200",):
+            elif not (reason == "HTTP 200" or reason.endswith("live")):
+                # Only an affirmative liveness signal counts as live; anything
+                # else (bot-block, timeout, 5xx) is unconfirmed and kept.
                 blocked += 1
 
     live = len(rows) - len(dead) - blocked

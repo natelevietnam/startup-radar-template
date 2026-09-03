@@ -1,11 +1,13 @@
 """SQLite database — generic startup + job + connections store."""
 
+import difflib
 import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-from typing import Iterable
+from urllib.parse import (parse_qs, parse_qsl, urlencode, urlparse,
+                          urlsplit, urlunsplit)
+from typing import Iterable, Optional
 
 import pandas as pd
 
@@ -388,6 +390,149 @@ def get_decided_job_urls() -> set[str]:
         conn.close()
 
 
+# ---------- cross-source duplicate matching ----------
+#
+# The three guards above — the unique index, `get_decided_job_keys` and
+# `get_decided_job_urls` — settle every case where the two rows agree on
+# something exact: the same title after canonicalisation, or the same posting
+# URL. What none of them catch is one opening reaching us through two
+# aggregators that spell the title differently. Wellfound's "Sr. Product
+# Manager" and Jobright's "Product Manager" at a twenty-person startup are one
+# job, but `canon_role` deliberately keeps seniority (see its docstring), so
+# the keys differ and both rows land on the Uncategorized board.
+#
+# Matching those needs judgement, so this returns a verdict with a confidence
+# rather than a boolean, and callers treat the two levels differently:
+#
+#   certain=True   the two rows are provably the same posting — identical URL,
+#                  or the same requisition id on the same ATS host. Safe to
+#                  suppress outright.
+#   certain=False  the titles line up but nothing proves it. Surface it to the
+#                  user; never hide it. Traba runs "Senior Product Manager
+#                  (Marketplace)" and "Product Manager (Marketplace)" as two
+#                  live reqs, so a confident match here would bury a real
+#                  opening under an unrelated decision.
+#
+# The asymmetry that makes this safe: two postings on the SAME host carrying
+# DIFFERENT requisition ids are never the same job, however alike the titles
+# read. That single rule spares every large employer — Adobe's nine Workday
+# reqs, Bjak's eleven Ashby ones — from being collapsed into each other.
+
+_SENIORITY_WORDS = r"\b(sr|senior|staff|principal|lead|ii|iii|iv|i|2|3)\b"
+
+
+def _fold_title(role_title: str) -> str:
+    """Role title with seniority removed — aggregators invent and drop it."""
+    t = re.sub(r"\bsr\.", "sr", (role_title or "").strip().lower())
+    t = re.sub(r"[^a-z0-9]+", " ", t)
+    return re.sub(r"\s+", " ", re.sub(_SENIORITY_WORDS, "", t)).strip()
+
+
+def _title_specialization(role_title: str) -> str:
+    """The part of a title that is not the generic PM core.
+
+    "Senior Product Manager, Growth" -> "growth"; a bare "Product Manager" -> "".
+    An empty result means the title carries no distinguishing scope at all.
+    """
+    f = re.sub(r"\b(technical|product|program|project)?\s*manager\b", "",
+               _fold_title(role_title))
+    return re.sub(r"\s+", " ", re.sub(r"\bproduct\b", "", f)).strip()
+
+
+def _ats_host(url: str) -> str:
+    try:
+        return urlparse(url or "").netloc.lower().replace("www.", "")
+    except ValueError:
+        return ""
+
+
+def requisition_id(url: str) -> str:
+    """The ATS requisition id inside a posting URL, or "" when there is none.
+
+    Greenhouse and Wellfound put it in the query string, Workday in the path
+    ("..._R-10400472", sometimes with a "-1" re-post suffix), Ashby as a UUID.
+    Two ids that differ on the same host are proof of two different openings,
+    which is what keeps large employers' boards intact.
+    """
+    try:
+        parts = urlparse(url or "")
+        q = parse_qs(parts.query or "")
+    except ValueError:
+        return ""
+    for k in ("gh_jid", "job_listing_slug", "jobid", "id"):
+        if q.get(k):
+            return q[k][0]
+    path = (parts.path or "").rstrip("/")
+    m = re.search(r"_R-?(\d{4,})(?:-\d+)?$", path)
+    if m:
+        return "R" + m.group(1)
+    m = re.search(r"/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$", path)
+    if m:
+        return m.group(1)
+    m = re.search(r"/([0-9a-f]{16,}|\d{5,})$", path)
+    return m.group(1) if m else ""
+
+
+def decided_duplicate(role_title: str, url: str, decided_rows: list) -> Optional[dict]:
+    """Is this undecided posting the same job as one already decided about?
+
+    `decided_rows` are that company's rows carrying a DECIDED_STATUSES value,
+    as mappings with `role_title`, `url` and `status`. Returns None, or
+    ``{"status", "role", "reason", "certain"}`` — see the note above for what
+    the two confidence levels mean and how callers must treat them.
+    """
+    for d in decided_rows:
+        d_role, d_url = d["role_title"], d["url"]
+        verdict = {"status": d["status"], "role": d_role}
+
+        mine, theirs = canon_url(url), canon_url(d_url)
+        if mine and mine == theirs:
+            return {**verdict, "reason": "same posting URL", "certain": True}
+
+        host, d_host = _ats_host(url), _ats_host(d_url)
+        req, d_req = requisition_id(url), requisition_id(d_url)
+        same_host = bool(host) and host == d_host
+        if same_host and req and d_req:
+            if req != d_req:
+                continue                       # provably two different reqs
+            return {**verdict, "reason": "same requisition id", "certain": True}
+
+        spec, d_spec = _title_specialization(role_title), _title_specialization(d_role)
+        if spec and d_spec:
+            if difflib.SequenceMatcher(None, spec, d_spec).ratio() >= 0.88:
+                return {**verdict, "reason": f"same specialization ({spec})",
+                        "certain": False}
+        elif not spec and not d_spec and not same_host:
+            # Two bare "Product Manager" titles reaching us from different
+            # aggregators. Often one job; at a large employer, often not.
+            if difflib.SequenceMatcher(
+                None, _fold_title(role_title), _fold_title(d_role)
+            ).ratio() >= 0.85:
+                return {**verdict,
+                        "reason": f"untitled re-list via {host or 'unknown source'}",
+                        "certain": False}
+    return None
+
+
+def get_decided_rows_by_company() -> dict:
+    """Decided rows grouped by canonical company name, for duplicate matching."""
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT company_name, role_title, url, status FROM job_matches "
+            f"WHERE status IN ({','.join('?' * len(DECIDED_STATUSES))})",
+            DECIDED_STATUSES,
+        ).fetchall()
+    finally:
+        conn.close()
+    out: dict = {}
+    for company, role, url, status in rows:
+        out.setdefault(canon_company(company), []).append(
+            {"role_title": role, "url": url or "", "status": status}
+        )
+    return out
+
+
 def add_job_tombstones(pairs: list[tuple[str, str]]) -> int:
     """Record (company_name, role_title) pairs as deleted. Returns count added."""
     if not pairs:
@@ -581,7 +726,7 @@ def get_all_job_matches() -> pd.DataFrame:
     try:
         df = pd.read_sql_query(
             """SELECT company_name, company_description, role_title,
-                      location, url, priority, status, date_found, notes
+                      location, url, priority, source, status, date_found, notes
                FROM job_matches ORDER BY date_found DESC, id DESC""",
             conn,
         )
@@ -589,7 +734,7 @@ def get_all_job_matches() -> pd.DataFrame:
         conn.close()
     df.columns = [
         "Company", "Company Description", "Role",
-        "Location", "Link", "Priority", "Status", "Date Found", "Notes",
+        "Location", "Link", "Priority", "Source", "Status", "Date Found", "Notes",
     ]
     df["Status"] = df["Status"].fillna("")
     df["Notes"] = df["Notes"].fillna("")
@@ -604,6 +749,21 @@ def update_startup_status(company_name: str, status: str) -> None:
         conn.execute(
             "UPDATE startups SET status = ? WHERE company_name = ? COLLATE NOCASE",
             (status, company_name),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_job_priority(company_name: str, role_title: str, priority: str) -> None:
+    """Set a row's priority. Ranking only — never affects what the board shows."""
+    conn = _connect()
+    try:
+        conn.execute(
+            """UPDATE job_matches SET priority = ?
+               WHERE company_name = ? COLLATE NOCASE
+                 AND role_title = ? COLLATE NOCASE""",
+            (priority, company_name, role_title),
         )
         conn.commit()
     finally:

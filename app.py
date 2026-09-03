@@ -34,6 +34,9 @@ except Exception as e:
 database.init_db()
 
 STATUS_OPTIONS = ["", "Interested", "Not Interested", "Applied", "Wishlist"]
+# Tracker states that mean a conversation is live. A new application at the same
+# company must not overwrite one of these with a plain "Applied".
+IN_FLIGHT_STATUSES = {"Round 1 Interview", "Round 2 Interview", "Final Round", "Offer"}
 PRIORITY_OPTIONS = ["", "Low", "Medium", "High"]
 ACTIVITY_TYPES = ["Emailed", "Applied", "Called", "Meeting", "Follow-up", "Interview", "Note"]
 TRACKER_STATUS_OPTIONS = ["In Progress", "Applied", "Gone Cold"]
@@ -754,15 +757,26 @@ elif page == "Job Matches":
                 role = original_df.loc[idx, "Role"]
                 database.update_job_status(company, role, new)
                 if new == "Applied":
+                    # Every application is an event, so it is always logged —
+                    # this used to fire only for the first role at a company,
+                    # which left later applications with no activity record at
+                    # all and the tracker still naming the oldest one.
+                    database.insert_activity({
+                        "company_name": company, "role_title": role,
+                        "activity_type": "Applied", "contact_name": "",
+                        "contact_title": "", "contact_email": "",
+                        "date": TODAY, "follow_up_date": "", "notes": "",
+                    })
+                    # The tracker holds one row per company, so a newer
+                    # application should move it forward — except when it is
+                    # already recording an in-flight stage for another role.
+                    # "Round 1 Interview" is more informative than a fresh
+                    # "Applied", and the activity log keeps the full history
+                    # either way.
                     ts = database.get_tracker_status(company)
-                    if not ts:
-                        database.upsert_tracker_status(company, "Applied", role, "")
-                        database.insert_activity({
-                            "company_name": company, "role_title": role,
-                            "activity_type": "Applied", "contact_name": "",
-                            "contact_title": "", "contact_email": "",
-                            "date": TODAY, "follow_up_date": "", "notes": "",
-                        })
+                    if not ts or (ts.get("status") or "") not in IN_FLIGHT_STATUSES:
+                        database.upsert_tracker_status(
+                            company, "Applied", role, (ts or {}).get("notes", ""))
                 changed = True
         return changed
 

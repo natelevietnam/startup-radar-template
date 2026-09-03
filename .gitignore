@@ -12,6 +12,10 @@ fit_dossiers.json
 *.db
 *.db-shm
 *.db-wal
+# Manual safety copies taken before destructive runs. `*.db` does NOT match
+# these — the suffix comes after the extension (startup_radar.db.bak-2026-09-02)
+# — so without this line a `git add -A` would push the full job database.
+*.db.bak-*
 *.sqlite
 *.sqlite3
 connections.csv

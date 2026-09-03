@@ -74,6 +74,16 @@
     padding:3px 8px;border-radius:20px;white-space:nowrap;color:#fff}
   .y{color:var(--t-strong);font-weight:600} .n{color:var(--t-pass);font-weight:600} .rsk{color:var(--t-weak);font-weight:600}
 
+  /* eligibility gates — a second axis alongside the fit score */
+  .gpip{font-family:var(--mono);font-weight:700;font-size:13px;cursor:help}
+  table.master td.gt{white-space:nowrap;letter-spacing:3px}
+  .fbtn.gate{border-color:color-mix(in srgb,var(--brand) 35%,transparent)}
+  .gatebar{display:flex;flex-wrap:wrap;align-items:center;gap:5px 12px;margin-top:7px}
+  .gatebar .gstat{font-family:var(--mono);font-size:10.5px;font-weight:700;letter-spacing:.05em;
+    text-transform:uppercase;color:var(--gc);border:1px solid var(--gc);border-radius:999px;padding:2px 8px}
+  .gatebar .gitem{font-family:var(--mono);font-size:10.5px;color:var(--muted);white-space:nowrap}
+  .gatebar .gitem .gpip{font-size:11.5px;margin-right:3px}
+
   /* cards */
   #cards{display:flex;flex-direction:column;gap:16px}
   .card{background:var(--surface);border:1px solid var(--hair);border-radius:12px;overflow:hidden;
@@ -121,6 +131,26 @@
   .orole{display:inline-block;font-size:11.5px;font-family:var(--mono);background:var(--brand-soft);color:var(--brand);padding:2px 8px;border-radius:6px;margin:0 6px 3px 0}
   .orole.new{background:#FDF3E0;color:#8A5D12;box-shadow:inset 0 0 0 1px #EBD4A8}
   .repost.pin{background:var(--mh-bg);color:var(--mh-tx);border-color:#BFDECB}
+  /* "you already have an application in at this company" — context, not a filter.
+     The other roles here are live; this only stops you re-reading a company you
+     are already in process with as though it were a fresh lead. */
+  .repost.applied{background:var(--brand-soft);color:var(--brand);border-color:#C6D6EA;text-transform:none}
+  .repost.applied.closed{background:var(--db-bg);color:var(--db-tx);border-color:#F0CBC9}
+  /* Deprioritized: ranked down, never hidden. Neutral rather than alarming —
+     it is a decision you made, not a problem with the company. */
+  .repost.deprio{background:var(--nu-bg);color:var(--nu-tx);border-color:#D3DAE4}
+  /* Priority labels the card, it never reorders the board — this view ranks on
+     fit, and how actionable that fit is is a separate axis. Medium is the
+     default and stays unbadged so the signal is only on the two ends. */
+  .repost.prio-high{background:var(--mh-bg);color:var(--mh-tx);border-color:#BFDECB;text-transform:none}
+  .repost.prio-low{background:var(--nu-bg);color:var(--nu-tx);border-color:#D3DAE4;text-transform:none}
+  .lowroles{margin-top:6px;font-family:var(--mono);font-size:11px;color:var(--faint)}
+  /* An unprovable cross-source match: shown, never hidden, because a company
+     can run two tiers of the same role at once. The reader decides. */
+  .dupewarn{margin-top:7px;font-family:var(--mono);font-size:11px;line-height:1.45;
+    color:var(--t-weak);background:#FDF3E0;border:1px solid #EBD4A8;border-radius:6px;
+    padding:5px 9px;max-width:72ch}
+  .dupewarn b{color:#8A5D12;font-weight:700}
   .repost{display:inline-block;font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:.04em;
     text-transform:uppercase;background:#FDF3E0;color:#8A5D12;border:1px solid #EBD4A8;
     padding:2px 8px;border-radius:999px;margin-left:9px;vertical-align:3px}
@@ -187,6 +217,11 @@
     <button class="fbtn" data-f="pass">&lt;45</button>
     <button class="fbtn" data-f="pending">New / not researched</button>
     <button class="fbtn" data-f="stale">Re-posted since research</button>
+    <button class="fbtn gate" data-f="high">★ High priority</button>
+    <button class="fbtn" data-f="deprio">Deprioritized</button>
+    <button class="fbtn gate" data-f="ready">✓ Ready to apply</button>
+    <button class="fbtn gate" data-f="ask">? One question away</button>
+    <button class="fbtn gate" data-f="blocked">✕ Blocked — consider excluding</button>
   </div>
   <input id="q" type="search" placeholder="Filter by company, role, or keyword…" aria-label="Filter companies">
   <span class="count" id="count"></span>
@@ -196,7 +231,7 @@
   <h2 class="sec">Ranked overview</h2>
   <div class="legend" id="legend"></div>
   <div class="tablewrap"><table class="master"><thead><tr>
-    <th>#</th><th>Company</th><th>Role</th><th style="text-align:right">Score</th><th>Verdict</th><th>Location</th><th>$150K base</th><th>Headline read</th>
+    <th>#</th><th>Company</th><th>Role</th><th style="text-align:right">Score</th><th>Verdict</th><th>Gates</th><th>Location</th><th>$150K base</th><th>Headline read</th>
   </tr></thead><tbody id="mbody"></tbody></table></div>
 </div></section>
 
@@ -224,21 +259,97 @@ const TIER = {
 function tierOf(d){const s=(d&&typeof d==='object')?(d.pending?null:d.score):d;if(s==null)return"pending";return s>=80?"strong":s>=70?"lean":s>=55?"poss":s>=45?"weak":"pass";}
 
 const FINDINGS = [
-  {h:"Every company on the board is now researched — and the top has changed hands",p:"156 of 156 companies carry a full dossier; nothing is a stub. Ten score 80+, and half of those were invisible this morning: <b>Solidroad (85)</b>, <b>Shepherd (84)</b>, <b>Perplexity (84)</b>, <b>Ivo (82)</b>, <b>WisdomAI (82)</b>. Behind them Fivetran, Harvey, Hex, Reflection and Samsara cluster at 80–81. The middle is thick — 44 companies sit at 70–79 — so the differentiator is rarely the score, it's which one clears sponsorship and comp together."},
-  {h:"Sponsorship finally has real answers instead of shrugs",p:"This was the board's universal blind spot; it isn't any more. <b>Confirmed filings</b>: Solidroad (3 LCAs, $190–210K), Perplexity (27 incl. 2 PM titles), WisdomAI (PM-titled at $230K), Ivo (7 in 2025, and the careers page explicitly offers visa <i>and green card</i> sponsorship), Airwallex (18 SF filings), Kikoff (17), Tools for Humanity (8, median $233K), Unit21 (24). <b>Explicit refusals</b>, stated in the postings themselves: FloQast, Gallup, General Motors — plus Sourcegraph, which limits sponsorship to roles requiring a specific country. Binti, where you're interviewing, still shows no record at all."},
-  {h:"The feed's salary numbers are wrong often enough to distrust by default",p:"Four documented errors today. <b>Upstart</b>: feed said $416–437K, posting says $162–224K. <b>Asana</b>: feed $331–428K, posting $202–230K. <b>Uber Freight</b>: $183–223K estimate against a real sponsored median near $160K. <b>General Motors</b>: $202–226K uncorroborated, comparable req $110–176K. Every one of these came from third-party estimates rather than employer-posted bands. The reliable source is the posting itself — Ashby and Greenhouse APIs and LinkedIn job views returned exact bands where aggregators guessed."},
-  {h:"Roughly a fifth of this board is a ghost, a middleman, or the wrong company",p:"<b>Unverifiable</b> — no funding record, no named founder, no confirmed HQ: Readdy, Picnic, Smart Access, Tandem Ventures, Indigo. <b>Not a real opening</b>: OpenSkills is an SEO course catalog dressed as a job; Jack &amp; Jill is a recruiting agency sourcing for an unnamed client. <b>Likely already closed</b>: Airtable, Arcade, Kira, Raptive, Harvey. <b>Wrong company entirely</b>: 'Otter' is the CloudKitchens restaurant POS, not Otter.ai; 'Everpure' is Pure Storage post-rename. <b>Not even a PM role</b>: Biogen matched on a title keyword and is regulatory affairs. Check the employer is who you think before you invest an hour."}
+  // Counts and the 80+ roll-call in this first block are interpolated from DATA
+  // at render time ({{token}} below) — they went stale three times in one day
+  // when hand-written. The analysis around them is authored; the numbers are live.
+  {h:"{{total}} companies, {{researched}} researched — and the top keeps thinning as you apply through it",p:"{{researched}} of {{total}} carry a full dossier; {{pending}} are new arrivals still pending research. {{n80word}} score 80+{{top80clause}}. What lifts a company up this board is sponsorship becoming <i>evidenced</i> rather than assumed — Ramp's 28 LCAs in 2025, or Mercor's Senior PM filing at $185,994 once you look under the <b>Mercorio</b> entity rather than the brand name. The middle is very thick: {{n70}} companies sit at 70–79, so the score rarely separates them. Sponsorship and posted comp do."},
+  {h:"Check the legal entity before believing a sponsorship 'no'",p:"The most consequential finding of this run is methodological. A single-name lookup on h1bdata returns zero for <b>GoGuardian</b> (files as <b>Liminex</b> — 78 filings, Director of Product Mgmt at $304K), <b>Bill.com</b> (files as <b>Bill Operations LLC</b> — 100 filings, PM titles to $282K), and <b>Together AI</b> (files as <b>Together Computer, Inc.</b>). Each would have been scored as a non-sponsor on your hard gate. <b>Rippling</b> fell 82→65 for exactly this reason and its filing entity is still unresolved — treat that drop as unproven, not as evidence it won't sponsor. Also note h1bdata defaults to the current year only; EvenUp showed zero until an all-years query returned 16 filings at $230K median."},
+  {h:"The feed's salary figures are wrong more often than they are right",p:"Nine more confirmed errors this run, on top of four last time. <b>Together AI</b>: feed $441–478K, posting <b>$200–280K</b>. <b>Earnin</b>: feed $520K, posting <b>$229–280K</b>. <b>Airbnb</b>: feed $291–455K is total comp; base is <b>$232–282K</b>. <b>Applied Intuition</b>: feed $425K, actual LCA base <b>$200K</b>. <b>Jerry</b>: feed $160–210K against a sole PM filing at <b>$107,619</b> — and the req is closed. Aggregator <i>sponsorship</i> tags are equally unreliable: Jobright marked Keeper Security, Curinos and Dice as having an H-1B track record; their actual filing counts are zero, zero and one."},
+  {h:"A quarter of this board is a ghost, a middleman, or the wrong company",p:"<b>Staffing agencies posting as employers</b>: Harnham (12), Resourceful Talent Group (20), Jack &amp; Jill, plus Capgemini/EPAM-style placements. <b>Wrong company entirely</b>: 'IPG' is Intertape Polymer Group, an industrial tape maker; 'GPA' is a paper manufacturer Jobright rated a 94% match; 'Otter' is CloudKitchens' restaurant POS, not Otter.ai; 'delight.ai' is the rebranded Sendbird — a duplicate of a company already on your board. <b>Reqs that no longer exist</b>: Fivetran's three Oakland roles, Nooks' posted req (the live one differs), Coram AI, Bill.com, Jerry, Multiplier. <b>Explicit no-sponsorship</b>, in the posting text: Edia, Holly, Harnham, Corelight, FloQast, Gallup, GM. Confirm the employer is who you think before spending an hour."}
 ];
 
 const DATA = [ /*DATA*/ ];
 
 /* ---- render ---- */
 function vpill(t,big){const o=TIER[t];return `<span class="vpill${big?' big':''}" style="background:${o.c}">${o.label}</span>`;}
+
+// Companies where an application is already in flight keep their other openings
+// on the board — applying to one Visa role says nothing about its eight others —
+// but the card says so, so you are not re-reading a company blind.
+function appliedBadge(d){
+  const e=d.engaged; if(!e) return '';
+  const closed=/rejected/i.test(e.status||'');
+  const label=e.role?`${e.status}: ${e.role}`:e.status;
+  return `<span class="repost applied${closed?' closed':''}" title="Tracked in your application tracker">${esc(label)}</span>`;
+}
+
+// High and Low get a badge; Medium is the default and would only add noise on
+// the 79 cards that carry it. A company shows the best priority among its open
+// roles — one High opening is a reason to look even if the rest are Medium.
+function prioBadge(d){
+  if(d.priority==='High') return '<span class="repost prio-high">High priority</span>';
+  if(d.priority==='Low'&&!d.deprioritized) return '<span class="repost prio-low">Low priority</span>';
+  return '';
+}
+
+// Cross-source matches that nothing proves. Listed, not hidden: suppressing
+// these would bury a live req under an unrelated decision the moment a company
+// posts two tiers of one role.
+function dupeWarn(d){
+  if(!d.maybeDupes||!d.maybeDupes.length) return '';
+  return `<div class="dupewarn">${d.maybeDupes.map(m=>
+    `<b>Possible duplicate:</b> ${esc(m.role)} looks like the ${esc(m.status).toLowerCase()} `+
+    `role ${esc(m.decidedRole)} (${esc(m.why)}). Kept — confirm before applying.`).join('<br>')}</div>`;
+}
+
+// Named, not hidden: when only some of a company's roles are marked Low the
+// card keeps its rank and says which ones, so the mark stays visible without
+// burying the openings you did not deprioritise.
+function lowNote(d){
+  if(!d.lowRoles||!d.lowRoles.length||d.deprioritized) return '';
+  return `<div class="lowroles">Deprioritized here: ${d.lowRoles.map(esc).join(' · ')}</div>`;
+}
+
+// Role titles come straight off scraped feeds; a stray & or < would break the row.
+function esc(v){return String(v??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 function clearsCell(c){if(c==='Y')return '<span class="y">Yes</span>';if(c==='N')return '<span class="n">No</span>';return '<span class="rsk">'+c+'</span>';}
 
+const _NUMWORD=["No","One","Two","Three","Four","Five","Six","Seven","Eight","Nine","Ten",
+  "Eleven","Twelve","Thirteen","Fourteen","Fifteen","Sixteen","Seventeen","Eighteen","Nineteen","Twenty"];
+
+/* Live figures for the first finding. Recomputed from DATA on every render so
+   the headline can never contradict the cards below it. */
+function findingStats(){
+  const scored=DATA.filter(d=>!d.pending&&d.score!=null);
+  const top=scored.filter(d=>d.score>=80).sort((a,b)=>b.score-a.score);
+  const parts=top.map(d=>`<b>${d.co}</b> (${d.score})`);
+  const clause=parts.length===0?""
+    :", led by "+(parts.length===1?parts[0]
+      :parts.slice(0,-1).join(", ")+" and "+parts[parts.length-1]);
+  return {
+    total:DATA.length,
+    researched:scored.length,
+    pending:DATA.filter(d=>d.pending).length,
+    n70:scored.filter(d=>d.score>=70&&d.score<80).length,
+    n80word:_NUMWORD[top.length]||String(top.length),
+    top80clause:clause,
+  };
+}
 function renderFindings(){
+  const s=findingStats();
+  const fill=t=>String(t).replace(/\{\{(\w+)\}\}/g,(m,k)=>k in s?s[k]:m);
   document.getElementById('findings').innerHTML = FINDINGS.map(f=>
-    `<div class="finding"><h4>${f.h}</h4><p>${f.p}</p></div>`).join('');
+    `<div class="finding"><h4>${fill(f.h)}</h4><p>${fill(f.p)}</p></div>`).join('');
+}
+/* Put the size of each gate bucket on its button — the count is the whole
+   point of the "Blocked" view: it is a worklist, so its length matters. */
+function labelGateButtons(){
+  const n={ready:0,ask:0,blocked:0};
+  DATA.forEach(d=>{const s=statusOf(d); if(s in n) n[s]++;});
+  const txt={ready:'✓ Ready to apply',ask:'? One question away',blocked:'✕ Blocked — consider excluding'};
+  document.querySelectorAll('.fbtn.gate').forEach(b=>{
+    const k=b.dataset.f; if(k in txt) b.textContent=`${txt[k]} (${n[k]})`;
+  });
 }
 function renderLegend(){
   document.getElementById('legend').innerHTML = Object.keys(TIER).map(k=>{
@@ -246,12 +357,36 @@ function renderLegend(){
     return `<span class="lg"><span class="dot" style="background:${TIER[k].c}"></span>${TIER[k].label} <b class="mono">&nbsp;${n}</b></span>`;
   }).join('');
 }
+/* ---- eligibility gates ----
+   A second axis, independent of the fit score. The score says how good a
+   company is for you; the gates say whether you can actually take it. A
+   blocked 80 is a worse use of an evening than a clean 65, and that is not
+   visible from the ranking alone. */
+const GATE_LABEL={spon:'Sponsorship',comp:'Base ≥ $150K',loc:'Location'};
+const GSTYLE={ok:{t:'✓',c:'var(--t-strong)'},no:{t:'✕',c:'var(--t-pass)'},'?':{t:'?',c:'var(--t-poss)'}};
+const STATUS={
+  ready  :{label:'Ready to apply',   c:'var(--t-strong)'},
+  ask    :{label:'One question away',c:'var(--t-poss)'},
+  blocked:{label:'Blocked',          c:'var(--t-pass)'},
+  unknown:{label:'Not researched',   c:'var(--faint)'},
+};
+function gatesOf(d){return d.gates||{spon:'?',comp:'?',loc:'?',status:'unknown'};}
+function statusOf(d){return d.pending?'unknown':(gatesOf(d).status||'unknown');}
+function gateCell(d){
+  const g=gatesOf(d);
+  return ['spon','comp','loc'].map(k=>{
+    const s=GSTYLE[g[k]]||GSTYLE['?'];
+    return `<span class="gpip" style="color:${s.c}" title="${GATE_LABEL[k]}: ${g[k]}">${s.t}</span>`;
+  }).join('');
+}
 function renderMaster(rows){
   document.getElementById('mbody').innerHTML = rows.map(d=>{
-    const t=tierOf(d),c=TIER[t].c;
+    const t=tierOf(d),c=TIER[t].c,st=statusOf(d);
     return `<tr><td class="rk">${d._rank??'—'}</td><td class="co">${d.co}</td><td>${d.role}</td>
       <td class="sc" style="color:${c}">${d.pending?'—':(d.scoreLabel||d.score)}</td>
-      <td>${vpill(t)}</td><td>${d.locShort}</td><td>${clearsCell(d.clears)}</td>
+      <td>${vpill(t)}</td>
+      <td class="gt" title="${STATUS[st].label}">${gateCell(d)}</td>
+      <td>${d.locShort}</td><td>${clearsCell(d.clears)}</td>
       <td style="color:var(--muted);font-size:12.5px">${d.headline}</td></tr>`;
   }).join('');
 }
@@ -267,9 +402,16 @@ function renderCards(rows){
     const newSet = new Set((d.newRoles||[]).map(r=>r.toLowerCase()));
     const openRoles = (d.openRoles&&d.openRoles.length)
       ? `<div class="line"><span class="k">Open now (Uncategorized)</span>${d.openRoles.map(r=>`<span class="orole${newSet.has(r.toLowerCase())?' new':''}">${r}</span>`).join('')}</div>` : '';
+    const st=statusOf(d), g=gatesOf(d);
+    // The exclusion recommendation, stated on the card rather than left for
+    // you to infer from the breakers prose.
+    const gateBar = d.pending ? '' : `<div class="gatebar" style="--gc:${STATUS[st].c}">
+        <span class="gstat">${st==='ready'?'✓ Ready to apply':st==='ask'?'? One question away':'✕ Consider marking Not Interested'}</span>
+        ${['spon','comp','loc'].map(k=>`<span class="gitem"><span class="gpip" style="color:${(GSTYLE[g[k]]||GSTYLE['?']).c}">${(GSTYLE[g[k]]||GSTYLE['?']).t}</span>${GATE_LABEL[k]}</span>`).join('')}
+      </div>`;
     const head = `<div class="chead">
           <span class="rank">#${d._rank??'—'}</span>
-          <div><div class="name">${d.co}${d.pinned?`<span class="repost pin">pinned · ${d.pinned}</span>`:''}${d.stale?'<span class="repost">re-posted</span>':''}</div><div class="role">${d.role}</div></div>
+          <div><div class="name">${d.co}${d.pinned?`<span class="repost pin">pinned · ${d.pinned}</span>`:''}${appliedBadge(d)}${prioBadge(d)}${d.deprioritized?'<span class="repost deprio">deprioritized</span>':''}${d.stale?'<span class="repost">re-posted</span>':''}</div><div class="role">${d.role}</div>${gateBar}${dupeWarn(d)}${lowNote(d)}</div>
           <div class="scorebox"><div class="num" style="color:${c}">${d.pending?'—':d.score}${d.pending?'':'<small>/100</small>'}</div>
             ${d.pending?'':`<div class="bar"><i style="width:${d.score}%;background:${c}"></i></div>`}
             ${vpill(t,true)}</div>
@@ -311,11 +453,29 @@ function renderCards(rows){
 
 let curFilter='all',curQ='';
 function apply(){
-  let rows=DATA.slice().sort((a,b)=>(b.pending?-1:b.score)-(a.pending?-1:a.score));
+  // A company you deprioritised ranks below everything you didn't, whatever it
+  // scores — the mark is a decision about your attention, and score alone would
+  // keep overriding it. Only companies whose *every* open role is Low sort down;
+  // a mixed company keeps its place (see _attach_priority in the generator).
+  let rows=DATA.slice().sort((a,b)=>{
+    const dep=x=>x.deprioritized?1:0;
+    if(dep(a)!==dep(b)) return dep(a)-dep(b);
+    return (b.pending?-1:b.score)-(a.pending?-1:a.score);
+  });
   let n=0; rows.forEach(d=>{ d._rank = d.pending? null : (++n); });
+  // "Ready to apply" is the one view where the fit score is not the right
+  // order: among companies you can actually take, you still want the best
+  // first, so it keeps the score sort. "Blocked" is the exclusion worklist.
+  const GATEF={ready:1,ask:1,blocked:1};
   let view=rows.filter(d=>{
-    // "stale" cuts across score tiers, so it can't go through tierOf().
-    const okF = curFilter==='all' || (curFilter==='stale' ? !!d.stale : tierOf(d)===curFilter);
+    // "stale" and the gate views cut across score tiers, so neither can go
+    // through tierOf().
+    const okF = curFilter==='all' ? true
+              : curFilter==='stale' ? !!d.stale
+              : curFilter==='deprio' ? !!d.deprioritized
+              : curFilter==='high' ? d.priority==='High'
+              : GATEF[curFilter] ? statusOf(d)===curFilter
+              : tierOf(d)===curFilter;
     const okQ = !curQ||d.search.includes(curQ);
     return okF&&okQ;
   });
@@ -324,7 +484,7 @@ function apply(){
 }
 function boot(){
   DATA.forEach(d=>{d.search=(d.co+' '+(d.role||'')+' '+((d.openRoles||[]).join(' '))+' '+(d.headline||'')+' '+(d.search0||'')+' '+(d.founder||'')+(d.stale?' re-posted reposted stale since research':'')).toLowerCase();});
-  renderFindings(); renderLegend(); apply();
+  renderFindings(); renderLegend(); labelGateButtons(); apply();
   document.querySelectorAll('.fbtn').forEach(b=>b.addEventListener('click',()=>{
     document.querySelectorAll('.fbtn').forEach(x=>x.setAttribute('aria-pressed','false'));
     b.setAttribute('aria-pressed','true'); curFilter=b.dataset.f; apply();

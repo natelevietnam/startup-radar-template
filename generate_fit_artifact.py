@@ -55,6 +55,12 @@ OUT = ROOT / "reports" / "pm_fit_dashboard.html"
 _FALLBACK_ARTIFACT_URL = "https://claude.ai/code/artifact/288b4ad5-27e3-466b-a005-7f2b5b10e635"  # artifact-url-ok
 
 COMP_FLOOR = 150_000  # base-salary deal-breaker
+
+
+def _max_years() -> int:
+    """targets.max_years_experience, or 0 when the rule is switched off."""
+    cap = (_load_config().get("targets", {}) or {}).get("max_years_experience")
+    return cap if isinstance(cap, int) else 0
 CATEGORIZED = {"applied", "wishlist", "interested", "not interested"}
 
 # A stale dossier at or above this score is worth re-researching automatically;
@@ -235,6 +241,8 @@ def _attach_priority(d: dict, slot: dict) -> None:
     ranked = sorted((p for p in slot["prios"] if p in order), key=lambda p: order[p])
     if ranked:
         d["priority"] = ranked[0]
+    if slot["overYears"]:
+        d["overYears"] = slot["overYears"]
     if not slot["lowRoles"]:
         return
     d["lowRoles"] = slot["lowRoles"]
@@ -253,10 +261,11 @@ def build_data() -> tuple[list[dict], dict]:
 
     rows = conn.execute(
         "select company_name, role_title, location, url, company_description, status, "
-        "       coalesce(priority,'') as priority "
+        "       coalesce(priority,'') as priority, years_required "
         "from job_matches"
     ).fetchall()
 
+    MAX_YEARS = _max_years()
     engaged = _engaged_companies(conn)
     # Every row already decided about — applied, not interested, interested,
     # wishlist — grouped by company for the cross-source duplicate check.
@@ -293,7 +302,15 @@ def build_data() -> tuple[list[dict], dict]:
                 continue
         slot = by_co.setdefault(key, {"name": r["company_name"], "roles": [], "locs": [],
                                       "urls": [], "descs": [], "maybeDupes": [],
-                                      "lowRoles": [], "prios": []})
+                                      "lowRoles": [], "prios": [], "overYears": []})
+        # A posting whose stated product-experience bar is above the configured
+        # cap. Shown rather than silently dropped: the figure is parsed from the
+        # posting body, and a parse can be wrong (Google's "8 years of work
+        # experience ... product or business problems" read as 8 until the
+        # matcher was tightened). enrich_experience.py --apply is what files it.
+        if isinstance(r["years_required"], int) and MAX_YEARS and \
+                r["years_required"] > MAX_YEARS and r["role_title"]:
+            slot["overYears"].append({"role": r["role_title"], "yrs": r["years_required"]})
         slot["prios"].append((r["priority"] or "").strip())
         if (r["priority"] or "").strip().lower() == "low" and r["role_title"]:
             slot["lowRoles"].append(r["role_title"])

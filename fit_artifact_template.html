@@ -145,6 +145,12 @@
   .repost.prio-high{background:var(--mh-bg);color:var(--mh-tx);border-color:#BFDECB;text-transform:none}
   .repost.prio-low{background:var(--nu-bg);color:var(--nu-tx);border-color:#D3DAE4;text-transform:none}
   .lowroles{margin-top:6px;font-family:var(--mono);font-size:11px;color:var(--faint)}
+  /* Over the configured product-experience cap. Shown, not hidden: the figure is
+     parsed from the posting body and a parse can be wrong. */
+  .overyears{margin-top:6px;font-family:var(--mono);font-size:11px;line-height:1.45;
+    color:var(--t-pass);background:var(--db-bg);border:1px solid #F0CBC9;border-radius:6px;
+    padding:5px 9px;max-width:72ch}
+  .overyears b{color:var(--db-tx);font-weight:700}
   /* An unprovable cross-source match: shown, never hidden, because a company
      can run two tiers of the same role at once. The reader decides. */
   .dupewarn{margin-top:7px;font-family:var(--mono);font-size:11px;line-height:1.45;
@@ -302,6 +308,15 @@ function dupeWarn(d){
     `role ${esc(m.decidedRole)} (${esc(m.why)}). Kept — confirm before applying.`).join('<br>')}</div>`;
 }
 
+// Roles asking for more product experience than your configured cap. The figure
+// is read off the posting body, so the sentence it came from is worth checking
+// before acting — a parse can be wrong.
+function overYears(d){
+  if(!d.overYears||!d.overYears.length) return '';
+  return `<div class="overyears">${d.overYears.map(o=>
+    `<b>Asks ${o.yrs}+ years of product experience:</b> ${esc(o.role)}`).join('<br>')}</div>`;
+}
+
 // Named, not hidden: when only some of a company's roles are marked Low the
 // card keeps its rank and says which ones, so the mark stays visible without
 // burying the openings you did not deprioritise.
@@ -411,7 +426,7 @@ function renderCards(rows){
       </div>`;
     const head = `<div class="chead">
           <span class="rank">#${d._rank??'—'}</span>
-          <div><div class="name">${d.co}${d.pinned?`<span class="repost pin">pinned · ${d.pinned}</span>`:''}${appliedBadge(d)}${prioBadge(d)}${d.deprioritized?'<span class="repost deprio">deprioritized</span>':''}${d.stale?'<span class="repost">re-posted</span>':''}</div><div class="role">${d.role}</div>${gateBar}${dupeWarn(d)}${lowNote(d)}</div>
+          <div><div class="name">${d.co}${d.pinned?`<span class="repost pin">pinned · ${d.pinned}</span>`:''}${appliedBadge(d)}${prioBadge(d)}${d.deprioritized?'<span class="repost deprio">deprioritized</span>':''}${d.stale?'<span class="repost">re-posted</span>':''}</div><div class="role">${d.role}</div>${gateBar}${dupeWarn(d)}${overYears(d)}${lowNote(d)}</div>
           <div class="scorebox"><div class="num" style="color:${c}">${d.pending?'—':d.score}${d.pending?'':'<small>/100</small>'}</div>
             ${d.pending?'':`<div class="bar"><i style="width:${d.score}%;background:${c}"></i></div>`}
             ${vpill(t,true)}</div>

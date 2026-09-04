@@ -52,6 +52,15 @@ targets:
   #   "us"  — accept only US-eligible remote roles. Job boards describe a role
   #           as "Remote" when it's remote *within Iberia* or *within Germany*;
   #           this drops those. Bare "Remote" with no country is still kept.
+  # Postings demanding more than this many years of PRODUCT experience are out
+  # of band. No feed supplies this figure — it lives only in the posting body —
+  # so `enrich_experience.py` fetches and records it, and that script is the
+  # enforcement point. Ingest cannot apply it: a JobMatch has no posting text.
+  # Roughly a third of postings are readable; the rest keep NULL and are never
+  # excluded, because an unread requirement is not an exceeded one.
+  # Comment out to disable.
+  max_years_experience: 7
+
   remote_scope: any
 
   # Locations you're open to (case-insensitive substring).

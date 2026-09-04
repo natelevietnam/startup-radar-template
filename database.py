@@ -207,6 +207,29 @@ def get_existing_canon_keys() -> set[str]:
         conn.close()
 
 
+def get_existing_req_ids() -> set:
+    """(ATS host, requisition id) pairs already stored, at any status.
+
+    A third identity for "this exact posting", and the only one that catches a
+    feed serving one job twice under different slugs: LinkedIn's
+    ".../senior-product-manager-ai-developer-platform-at-tiktok-4449799035" and
+    ".../...-api-developer-platform-at-tiktok-4449799035" are the same posting
+    — same job id, different slug text — so their canonical titles differ and
+    their URLs differ, and neither of the other two guards sees it.
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute("SELECT url FROM job_matches").fetchall()
+    finally:
+        conn.close()
+    out = set()
+    for (u,) in rows:
+        host, req = _ats_host(u), requisition_id(u)
+        if host and req:
+            out.add((host, req))
+    return out
+
+
 def get_existing_canon_urls() -> set[str]:
     """Normalised posting URLs already stored, at any status."""
     conn = _connect()
@@ -495,6 +518,15 @@ def requisition_id(url: str) -> str:
     if m:
         return m.group(1)
     m = re.search(r"/([0-9a-f]{16,}|\d{5,})$", path)
+    if m:
+        return m.group(1)
+    # LinkedIn's slug form ends in the job id rather than carrying it as its own
+    # segment: "/jobs/view/senior-product-manager-ai-developer-platform-at-tiktok-4449791234".
+    # Without this, two same-host LinkedIn postings both yield "" and the
+    # "different req id on the same host" guard cannot fire — which let TikTok's
+    # "AI Developer Platform" and "API Developer Platform" (0.98 title
+    # similarity, genuinely different products) look like one job.
+    m = re.search(r"-(\d{6,})$", path)
     return m.group(1) if m else ""
 
 
@@ -649,6 +681,7 @@ def insert_job_matches(jobs: list) -> int:
     # that carries the same job twice in one run stores it once.
     seen_keys = get_existing_canon_keys()
     seen_urls = get_existing_canon_urls()
+    seen_reqs = get_existing_req_ids()
     conn = _connect()
     count = 0
     try:
@@ -682,12 +715,20 @@ def insert_job_matches(jobs: list) -> int:
             # would land on the Uncategorized board. A caller inserting with a
             # status already set (the dashboard's "Add Applied" form) is making
             # a deliberate record and must not be silently dropped.
+            # Computed outside the undecided branch: it is recorded for every
+            # row that inserts, including one arriving with a status already
+            # set, so a later undecided arrival of the same posting is caught.
+            creq = (_ats_host(values[4]), requisition_id(values[4]))
             if not (values[7] or "").strip():
                 if ckey in decided or (curl and curl in decided_urls):
                     continue
                 # Cross-source duplicate: the same opening already stored under
                 # a different spelling, or reached through a second feed.
                 if ckey in seen_keys or (curl and curl in seen_urls):
+                    continue
+                # Same posting under a different slug — the title and the URL
+                # both differ, so only the requisition id catches it.
+                if creq[0] and creq[1] and creq in seen_reqs:
                     continue
             try:
                 conn.execute(
@@ -699,6 +740,8 @@ def insert_job_matches(jobs: list) -> int:
                 )
                 count += 1
                 seen_keys.add(ckey)
+                if creq[0] and creq[1]:
+                    seen_reqs.add(creq)
                 if curl:
                     seen_urls.add(curl)
             except sqlite3.IntegrityError:

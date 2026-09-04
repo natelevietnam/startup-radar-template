@@ -211,6 +211,10 @@ class JobFilter:
             for p in targets.get("title_exclusion_patterns", [])
             if str(p).strip()
         ]
+        # Upper bound on stated product experience, read off the posting body
+        # by enrich_experience.py rather than supplied by any feed.
+        cap = targets.get("max_years_experience")
+        self.max_years_experience = cap if isinstance(cap, int) else None
         # Matched against the feed-supplied "level: X" marker, not the title.
         self.level_exclusions = [
             lv.lower().strip() for lv in targets.get("level_exclusions", []) if lv.strip()
@@ -254,6 +258,23 @@ class JobFilter:
             if m and m.group(1).strip().lower() in self.level_exclusions:
                 return True
         return False
+
+    def experience_excluded(self, years_required) -> bool:
+        """True if a posting's stated product-experience bar is above your band.
+
+        Deliberately NOT part of `passes()`. That runs at ingest against a
+        JobMatch, which carries no posting text, so the requirement is unknown
+        at the only moment `passes()` is called. `enrich_experience.py` fetches
+        the posting, records the figure, and is the single enforcement point.
+
+        Only ever called with a number that was actually read off the posting.
+        An unknown requirement is not an excluded one — roughly two thirds of
+        postings are client-rendered shells whose requirements never reach us —
+        so callers pass None for those and this returns False.
+        """
+        if self.max_years_experience is None or not isinstance(years_required, int):
+            return False
+        return years_required > self.max_years_experience
 
     def location_excluded(self, location: str) -> bool:
         """True if the location is disqualifying regardless of `location_filter`.

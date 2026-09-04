@@ -27,6 +27,30 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+# Columns added after the original schema. CREATE TABLE IF NOT EXISTS will not
+# add them to a database that already exists, so they are applied here instead.
+# Idempotent: each is skipped when already present.
+_ADDED_COLUMNS = {
+    "job_matches": [
+        ("years_required", "INTEGER"),
+        ("years_evidence", "TEXT DEFAULT ''"),
+    ],
+}
+
+
+def _apply_column_migrations(conn) -> None:
+    for table, cols in _ADDED_COLUMNS.items():
+        try:
+            have = {r[1] for r in conn.execute(f"pragma table_info({table})")}
+        except sqlite3.OperationalError:
+            continue
+        if not have:
+            continue
+        for name, decl in cols:
+            if name not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+
+
 def init_db() -> None:
     conn = _connect()
     try:
@@ -129,6 +153,7 @@ def init_db() -> None:
                 notes TEXT DEFAULT ''
             );
         """)
+        _apply_column_migrations(conn)
         conn.commit()
     finally:
         conn.close()

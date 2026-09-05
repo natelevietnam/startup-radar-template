@@ -71,6 +71,11 @@ _PREFERRED = re.compile(r"(preferred|nice[- ]to[- ]have|bonus|desired|a plus)", 
 # positives until this demanded an actual product-practitioner phrase.
 _PRODUCT = re.compile(
     r"\bproduct\s+(?:management|manager|leadership|owner|strategy)\b", re.IGNORECASE)
+# "PayPal has been revolutionizing commerce globally for more than 25 years" is
+# a company-history sentence, not a requirement.
+_COMPANY_AGE = re.compile(
+    r"(has been|have been|for (over|more than|nearly)|founded|since\s+(19|20)\d\d"
+    r"|our history|we have spent)", re.IGNORECASE)
 
 
 def extract(html: str) -> tuple[int | None, int | None, str]:
@@ -87,8 +92,16 @@ def extract(html: str) -> tuple[int | None, int | None, str]:
         before = text[max(0, m.start() - 170):m.start()]
         if _PREFERRED.search(before[-170:]):
             continue                               # a preferred bar is not the bar
-        after = text[m.end():m.end() + 90]
-        if _PRODUCT.search(after) or _PRODUCT.search(before[-60:]):
+        if _COMPANY_AGE.search(before[-60:]):
+            continue                               # the company's age, not your bar
+        # A tight window on purpose. At 90 characters PayPal's "has been
+        # revolutionizing commerce for more than 25 years ... seeking a seasoned
+        # product manager" read as a 25-year requirement: the company's age and
+        # an unrelated later mention of "product manager". The requirement phrase
+        # is always adjacent — "years of product management", "years as a product
+        # manager" — so 45 characters is enough and 90 is not safe.
+        after = text[m.end():m.end() + 45]
+        if _PRODUCT.search(after):
             if prod is None or years < prod:
                 prod = years
                 evidence = (before[-70:] + m.group(0) + after[:70]).strip()
@@ -171,14 +184,18 @@ def main(argv: list[str]) -> int:
     print(f"  stored {len(found)} requirement(s)"
           + (f", cleared {len(cleared)}" if cleared else ""))
 
-    if apply_cuts and over:
-        con.executemany(
+    if apply_cuts:
+        # Every undecided row above the cap, not only the ones read on this run.
+        # Without this, --apply silently skipped rows enriched earlier — which is
+        # most of them, since the default pass only reads rows lacking a value.
+        cur = con.execute(
             "UPDATE job_matches SET status = 'Not Interested', "
             "notes = TRIM(COALESCE(notes,'') || ' [over " + str(flt.max_years_experience)
-            + "y product experience]') WHERE id = ? AND TRIM(COALESCE(status,'')) = ''",
-            [(r["id"],) for r, _, _ in over])
+            + "y product experience]') "
+            "WHERE TRIM(COALESCE(status,'')) = '' AND years_required > ?",
+            (flt.max_years_experience,))
         con.commit()
-        print(f"  filed {len(over)} row(s) as Not Interested")
+        print(f"  filed {cur.rowcount} row(s) as Not Interested")
     elif over:
         print("  (not filed — pass --apply to act on them)")
     con.close()

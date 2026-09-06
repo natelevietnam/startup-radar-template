@@ -207,6 +207,125 @@ def get_existing_canon_keys() -> set[str]:
         conn.close()
 
 
+# A company writes its own name into its ATS board URL — jobs.ashbyhq.com/aegis-ai,
+# job-boards.greenhouse.io/verkada, verkada.wd1.myworkdayjobs.com. That slug is a
+# better identity than the display name, which each feed spells differently:
+# "AegisAI" from one feed and "Aegis AI Security" from another are one employer,
+# and neither canon_company nor any URL check links them. Across the current
+# database the slug is clean — no slug maps to two company names, and no company
+# name maps to two slugs — though only about 40% of rows carry one.
+_ATS_BOARD_HOSTS = {
+    "jobs.ashbyhq.com", "jobs.lever.co", "jobs.smartrecruiters.com",
+    "boards.greenhouse.io", "job-boards.greenhouse.io", "boards.eu.greenhouse.io",
+}
+_WORKDAY_HOST = re.compile(r"([a-z0-9-]+)\.wd\d+\.myworkdayjobs\.com$")
+
+
+def company_slug(url: str) -> str:
+    """The employer's own board identifier inside an ATS URL, or ""."""
+    try:
+        parts = urlparse(url or "")
+    except ValueError:
+        return ""
+    host = parts.netloc.lower().replace("www.", "")
+    m = _WORKDAY_HOST.match(host)
+    if m:
+        return m.group(1)
+    seg = [x for x in (parts.path or "").split("/") if x]
+    return seg[0].lower() if seg and host in _ATS_BOARD_HOSTS else ""
+
+
+def _despace(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (value or "").lower())
+
+
+def _boundary_prefix(short: str, long_: str) -> bool:
+    """True if `long_` begins with `short` and the split lands on a word boundary.
+
+    Compared with separators stripped, so "AegisAI" matches "Aegis AI Security".
+    The boundary check is what stops "Ramp" matching "Rampart": after consuming
+    the short name we must be at a non-alphanumeric character in the original.
+    """
+    a, b = _despace(short), _despace(long_)
+    if not a or not b or a == b or not b.startswith(a):
+        return False
+    used = 0
+    for ch in long_:
+        if used == len(a):
+            return not ch.isalnum()
+        if ch.isalnum():
+            used += 1
+    return used == len(a)
+
+
+def same_company_signals(a: dict, b: dict) -> int:
+    """How many independent signals say two rows share an employer.
+
+    `a` and `b` are mappings with company_name, role_title, location and url.
+    Counts a boundary-prefix name match, an ATS-slug link, an identical
+    canonical role title, and an identical city. Returns 0 when neither the
+    name nor the slug links them at all.
+
+    Callers must require the ROLE signal, and that requirement is the whole
+    reason this is safe. On name alone, "Mercury" — the fintech, two
+    applications in — matches "Mercury Insurance", an unrelated company. Their
+    roles differ, so demanding a matching role separates them, and likewise
+    separates Google from Google DeepMind, Amazon from AWS, and Uber from Uber
+    Freight, all genuinely distinct employers that share a name prefix.
+    """
+    names = (a.get("company_name", ""), b.get("company_name", ""))
+    name_link = _boundary_prefix(*names) or _boundary_prefix(names[1], names[0])
+    sa, sb = company_slug(a.get("url", "")), company_slug(b.get("url", ""))
+    slug_link = bool(
+        (sa and sb and sa == sb)
+        or (sa and _boundary_prefix(sa, names[1]))
+        or (sb and _boundary_prefix(sb, names[0]))
+    )
+    if not (name_link or slug_link):
+        return 0
+    ra, rb = canon_role(a.get("role_title", "")), canon_role(b.get("role_title", ""))
+    same_role = bool(ra) and ra == rb
+    ca = (a.get("location") or "").split(",")[0].strip().lower()
+    cb = (b.get("location") or "").split(",")[0].strip().lower()
+    return sum((name_link, slug_link, same_role, bool(ca) and ca == cb))
+
+
+def same_company_candidates(min_signals: int = 3) -> list:
+    """Undecided rows that look like the same employer under two names.
+
+    Surfaced, never merged. The employer behind a name is a fact only a person
+    can confirm — "delight.ai" is Sendbird's rebrand and nothing in either
+    string says so — so this reports and leaves the decision alone.
+    """
+    conn = _connect()
+    try:
+        # _connect() returns tuple rows; name them here rather than changing a
+        # factory every other caller in this module relies on.
+        cols = ("id", "company_name", "role_title", "location", "url", "status")
+        rows = [dict(zip(cols, r)) for r in conn.execute(
+            "SELECT id, company_name, role_title, location, url, "
+            "       COALESCE(status,'') FROM job_matches")]
+    finally:
+        conn.close()
+    out, seen = [], set()
+    for i, a in enumerate(rows):
+        for b in rows[i + 1:]:
+            if canon_company(a["company_name"]) == canon_company(b["company_name"]):
+                continue
+            ra, rb = canon_role(a["role_title"]), canon_role(b["role_title"])
+            if not ra or ra != rb:          # the role signal is mandatory
+                continue
+            n = same_company_signals(a, b)
+            if n < min_signals:
+                continue
+            key = tuple(sorted((a["id"], b["id"])))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((a, b, n))
+    return out
+
+
 def get_existing_req_ids() -> set:
     """(ATS host, requisition id) pairs already stored, at any status.
 

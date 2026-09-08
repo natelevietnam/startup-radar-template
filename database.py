@@ -34,6 +34,12 @@ _ADDED_COLUMNS = {
     "job_matches": [
         ("years_required", "INTEGER"),
         ("years_evidence", "TEXT DEFAULT ''"),
+        # 'refused' / 'offered' / 'silent' / NULL. Only 'refused' excludes.
+        # 'silent' means the posting was read and said nothing; NULL means it
+        # was never successfully read, and is retried. See
+        # enrich_sponsorship.py.
+        ("sponsorship", "TEXT"),
+        ("sponsorship_evidence", "TEXT DEFAULT ''"),
     ],
 }
 

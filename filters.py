@@ -222,6 +222,9 @@ class JobFilter:
         # "us" keeps only US-eligible remote roles; "any" preserves the old
         # behaviour of accepting every listing containing the word "remote".
         self.remote_scope = str(targets.get("remote_scope", "any")).lower().strip()
+        # When true, postings that explicitly refuse visa sponsorship are out.
+        # The stance is read off the posting body by enrich_sponsorship.py.
+        self.require_visa_sponsorship = bool(targets.get("require_visa_sponsorship", False))
 
     def company_excluded(self, company_name: str) -> bool:
         return _company_excluded(company_name, self._excl_co_patterns)
@@ -275,6 +278,24 @@ class JobFilter:
         if self.max_years_experience is None or not isinstance(years_required, int):
             return False
         return years_required > self.max_years_experience
+
+    def sponsorship_excluded(self, sponsorship) -> bool:
+        """True if a posting explicitly refuses visa sponsorship.
+
+        Deliberately NOT part of `passes()`, for the same reason as
+        `experience_excluded`: `passes()` runs at ingest against a JobMatch
+        carrying no posting text, and a sponsorship statement lives only in the
+        posting body. `enrich_sponsorship.py` fetches it, records the stance,
+        and is the single enforcement point.
+
+        Only an explicit refusal excludes. Silence is not a refusal — most
+        employers who do sponsor never mention it — so a posting that said
+        nothing ('silent'), offered sponsorship ('offered'), or could never be
+        read (None) all return False.
+        """
+        if not self.require_visa_sponsorship:
+            return False
+        return sponsorship == "refused"
 
     def location_excluded(self, location: str) -> bool:
         """True if the location is disqualifying regardless of `location_filter`.

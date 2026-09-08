@@ -61,6 +61,16 @@ targets:
   # Comment out to disable.
   max_years_experience: 7
 
+  # Drop postings that explicitly refuse visa sponsorship. Same shape as the
+  # rule above: the statement lives only in the posting body, so
+  # `enrich_sponsorship.py` fetches and records it and is the enforcement
+  # point. ONLY an explicit refusal counts — "we are unable to sponsor", "must
+  # be authorized to work in the US without sponsorship". Silence is not a
+  # refusal, because most employers who do sponsor never mention it, so a
+  # posting that said nothing (or could not be read) is always kept.
+  # Set false, or comment out, to disable.
+  require_visa_sponsorship: true
+
   remote_scope: any
 
   # Locations you're open to (case-insensitive substring).

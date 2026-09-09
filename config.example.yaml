@@ -33,6 +33,11 @@ targets:
     - vp
     - director
     - head of
+    # Keep this if `roles` above contains a bare title like "product manager".
+    # Substring matching means "Founding Product Manager" satisfies "product
+    # manager", so narrowing `roles` does NOT drop founding-PM postings on its
+    # own - only an exclusion does. Matched on word boundaries, title only.
+    - founding
 
   # Regex escape hatch for tiers a literal substring can't express — e.g.
   # "lead product manager" does not match "Lead Data Product Manager".

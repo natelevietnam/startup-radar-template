@@ -35,6 +35,8 @@ from collections import Counter
 from pathlib import Path
 
 import database
+import filters
+from config_loader import load_config
 
 ROOT = Path(__file__).resolve().parent
 DOSSIERS = ROOT / "fit_dossiers.json"
@@ -42,13 +44,32 @@ DOSSIERS = ROOT / "fit_dossiers.json"
 HIGH_SCORE = 70   # with a clear gate
 LOW_SCORE = 55    # below this, Low regardless of gate
 
+# How far the High bar bends for the industries ranked highest in
+# targets.industry_priority, keyed by 0-based rank. Fintech is the clearest
+# signal on the resume, so a fintech row with a clear gate reaches High at 65
+# where a generic row needs 70. Nothing here can push a row DOWN: an unranked
+# industry (rank None, or a rank not in this table) simply gets no bonus, and
+# the Low rule is untouched — this bends the top bar, never the bottom one.
+INDUSTRY_BONUS = {0: 5, 1: 3}
+
 
 def _dossiers() -> dict:
     return {database.canon_company(d["co"]): d
             for d in json.loads(DOSSIERS.read_text())}
 
 
-def classify(row: sqlite3.Row, dossiers: dict) -> str:
+def _filter() -> filters.JobFilter:
+    return filters.JobFilter(load_config())
+
+
+def industry_rank(row, flt) -> "int | None":
+    """Where this row's industry sits in targets.industry_priority."""
+    return flt.industry_rank(row["company_name"],
+                             row["company_description"] or "",
+                             row["role_title"] or "")
+
+
+def classify(row: sqlite3.Row, dossiers: dict, rank=None) -> str:
     """The priority this row should carry. "" means leave it unranked."""
     if (row["priority"] or "").strip().lower() == "low":
         return "Low"                       # a decision already made — keep it
@@ -61,7 +82,8 @@ def classify(row: sqlite3.Row, dossiers: dict) -> str:
     status = (d.get("gates") or {}).get("status", "")
     if status == "blocked" or score < LOW_SCORE:
         return "Low"
-    if status == "ready" and score >= HIGH_SCORE:
+    bar = HIGH_SCORE - INDUSTRY_BONUS.get(rank, 0)
+    if status == "ready" and score >= bar:
         return "High"
     return "Medium"
 
@@ -72,22 +94,37 @@ def main(dry_run: bool = False) -> int:
                           else str(ROOT / "startup_radar.db"))
     con.row_factory = sqlite3.Row
     rows = con.execute(
-        "SELECT id, company_name, role_title, COALESCE(priority,'') AS priority "
+        "SELECT id, company_name, COALESCE(company_description,'') AS company_description, "
+        "role_title, COALESCE(priority,'') AS priority, industry_rank "
         "FROM job_matches WHERE TRIM(COALESCE(status,'')) = ''"
     ).fetchall()
 
-    changes = [(r["id"], r["priority"], want)
-               for r in rows for want in [classify(r, dossiers)]
-               if want != (r["priority"] or "")]
-    tally = Counter(classify(r, dossiers) for r in rows)
+    flt = _filter()
+    ranks = {r["id"]: industry_rank(r, flt) for r in rows}
+    wanted = {r["id"]: classify(r, dossiers, ranks[r["id"]]) for r in rows}
+
+    changes = [(r["id"], r["priority"], wanted[r["id"]])
+               for r in rows if wanted[r["id"]] != (r["priority"] or "")]
+    rank_changes = [(ranks[r["id"]], r["id"]) for r in rows
+                    if ranks[r["id"]] != r["industry_rank"]]
+    tally = Counter(wanted.values())
+    ranked = Counter(v for v in ranks.values() if v is not None)
 
     print(f"{len(rows)} undecided row(s) · "
           + " · ".join(f"{k or '(blank)'}={tally[k]}" for k in ("High", "Medium", "Low", ""))
           + f" · {len(changes)} change(s)" + (" (dry-run)" if dry_run else ""))
+    print("  industry rank · "
+          + " · ".join(f"{k}={ranked[k]}" for k in sorted(ranked))
+          + f" · unranked={len(rows) - sum(ranked.values())}"
+          + f" · {len(rank_changes)} to store")
 
-    if not dry_run and changes:
-        con.executemany("UPDATE job_matches SET priority = ? WHERE id = ?",
-                        [(new, rid) for rid, _old, new in changes])
+    if not dry_run:
+        if changes:
+            con.executemany("UPDATE job_matches SET priority = ? WHERE id = ?",
+                            [(new, rid) for rid, _old, new in changes])
+        if rank_changes:
+            con.executemany("UPDATE job_matches SET industry_rank = ? WHERE id = ?",
+                            rank_changes)
         con.commit()
     con.close()
     return len(changes)

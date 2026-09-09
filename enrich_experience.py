@@ -146,7 +146,7 @@ def main(argv: list[str]) -> int:
     print(f"reading {len(rows)} posting(s) · cap {flt.max_years_experience}y"
           f"{' (dry-run)' if dry else ''}")
 
-    found, over, cleared, unread = [], [], [], 0
+    found, over, soft, cleared, unread = [], [], [], [], 0
     with cf.ThreadPoolExecutor(max_workers=_WORKERS) as ex:
         for row, years, evidence, note in ex.map(_fetch, rows):
             if years is None:
@@ -162,16 +162,19 @@ def main(argv: list[str]) -> int:
             found.append((row, years, evidence))
             if flt.experience_excluded(years):
                 over.append((row, years, evidence))
+            elif flt.experience_deprioritized(years):
+                soft.append((row, years, evidence))
 
     print(f"  requirement read: {len(found)} · unreadable: {unread} · "
-          f"above the cap: {len(over)}"
+          f"above the cap: {len(over)} · above the band: {len(soft)}"
           + (f" · stale values to clear: {len(cleared)}" if cleared else ""))
-    for row, years, _ in sorted(over, key=lambda t: -t[1]):
-        print(f"    {years:>2}y  #{row['id']} {row['company_name'][:22]:<22} "
-              f"{row['role_title'][:44]}")
+    for label, bucket in (("CUT ", over), ("LOW ", soft)):
+        for row, years, _ in sorted(bucket, key=lambda t: -t[1]):
+            print(f"    {label}{years:>2}y  #{row['id']} "
+                  f"{row['company_name'][:22]:<22} {row['role_title'][:44]}")
 
     if dry:
-        return len(over)
+        return len(over) + len(soft)
 
     con.executemany(
         "UPDATE job_matches SET years_required = ?, years_evidence = ? WHERE id = ?",
@@ -185,7 +188,7 @@ def main(argv: list[str]) -> int:
           + (f", cleared {len(cleared)}" if cleared else ""))
 
     if apply_cuts:
-        # Every undecided row above the cap, not only the ones read on this run.
+        # Every undecided row above the bar, not only the ones read on this run.
         # Without this, --apply silently skipped rows enriched earlier — which is
         # most of them, since the default pass only reads rows lacking a value.
         cur = con.execute(
@@ -196,8 +199,26 @@ def main(argv: list[str]) -> int:
             (flt.max_years_experience,))
         con.commit()
         print(f"  filed {cur.rowcount} row(s) as Not Interested")
-    elif over:
-        print("  (not filed — pass --apply to act on them)")
+
+        # The middle band is demoted, never filed. A 6-year req against a
+        # 5-year band is a question to ask the hiring manager, not a reason to
+        # take the row off the board — so it stays, marked Low, with the figure
+        # in the notes. Rows already carrying a priority are left alone: those
+        # marks are decisions, and this rule must not overwrite one.
+        if flt.soft_years_experience is not None and \
+                flt.soft_years_experience < (flt.max_years_experience or 0):
+            cur = con.execute(
+                "UPDATE job_matches SET priority = 'Low', "
+                "notes = TRIM(COALESCE(notes,'') || ' [above the "
+                + str(flt.soft_years_experience) + "y band]') "
+                "WHERE TRIM(COALESCE(status,'')) = '' "
+                "AND TRIM(COALESCE(priority,'')) <> 'Low' "
+                "AND years_required > ? AND years_required <= ?",
+                (flt.soft_years_experience, flt.max_years_experience))
+            con.commit()
+            print(f"  marked {cur.rowcount} row(s) Low (above the band, kept)")
+    elif over or soft:
+        print("  (nothing written — pass --apply to act on them)")
     con.close()
     return len(over)
 

@@ -145,11 +145,9 @@ The cron keeps running under your personal GitHub. After Step 4–6, refresh the
 gh secret set CREDENTIALS_JSON -R natelevietnam/startup-radar-template < credentials.json
 gh secret set TOKEN_JSON       -R natelevietnam/startup-radar-template < token.json
 # cloud CONFIG_YAML = your config with waas_messages DISABLED (local-only). See nuance in §1.
-python3 - <<'PY' > /tmp/config.cloud.yaml
-import re; t=open('config.yaml').read()
-print(re.sub(r'(  waas_messages:\n(?:    .*\n)*)', lambda m: re.sub(r'(\n\s+enabled:\s*)true', r'\1false', m.group(0), 1), t, 1), end='')
-PY
-gh secret set CONFIG_YAML -R natelevietnam/startup-radar-template < /tmp/config.cloud.yaml
+# push_cloud_config.sh does the disabling, refuses to push if it did not take,
+# and prints the fingerprint the workflow logs, so you can confirm the match.
+./push_cloud_config.sh
 ```
 
 ---

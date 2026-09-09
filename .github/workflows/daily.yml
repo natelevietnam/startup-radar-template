@@ -42,6 +42,28 @@ jobs:
           CREDENTIALS_JSON: ${{ secrets.CREDENTIALS_JSON }}
           TOKEN_JSON: ${{ secrets.TOKEN_JSON }}
 
+      - name: Check config
+        # The cloud config arrives through a secret, so nothing in a PR can keep
+        # it in step with the local file. These two checks make the drift, and
+        # the one dangerous misconfiguration, visible in the run log instead of
+        # silent. Only a truncated hash is printed - never config contents,
+        # because this repo is public and so are its workflow logs.
+        run: |
+          python3 - <<'CFGCHECK'
+          import hashlib, sys, yaml
+          raw = open("config.yaml", "rb").read()
+          if not raw.strip():
+              sys.exit("config.yaml is empty - is the CONFIG_YAML secret set?")
+          print("config fingerprint:", hashlib.sha256(raw).hexdigest()[:16])
+          cfg = yaml.safe_load(raw) or {}
+          waas = ((cfg.get("sources") or {}).get("waas_messages") or {})
+          if waas.get("enabled") is True:
+              sys.exit("waas_messages is enabled in the cloud config. It must run "
+                       "locally only - a cloud run marks the emails read and strands "
+                       "the leads (MIGRATION_RUNBOOK.md section 1). Re-push the secret "
+                       "with ./push_cloud_config.sh, which disables it for you.")
+          CFGCHECK
+
       - name: Run pipeline
         run: python daily_run.py
 

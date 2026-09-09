@@ -13,6 +13,29 @@ import pandas as pd
 
 from models import Startup, JobMatch
 
+
+def industry_labels() -> dict:
+    """rank -> display label, from targets.industry_priority.
+
+    The label is the first term of each group, which is why the config puts the
+    defining word first ("fintech, payments, banking..."). Short terms are
+    upper-cased so "b2b" reads as B2B rather than B2b. Returns {} when no
+    ordering is configured, and never raises: a malformed config should grey
+    out one column, not take the dashboard down.
+    """
+    try:
+        from config_loader import load_config
+        groups = (load_config().get("targets", {}) or {}).get("industry_priority") or []
+    except Exception:
+        return {}
+    out = {}
+    for i, group in enumerate(groups):
+        if isinstance(group, (list, tuple)) and group:
+            term = str(group[0]).strip()
+            if term:
+                out[i] = term.upper() if len(term) <= 3 else term.title()
+    return out
+
 DB_PATH = Path(__file__).parent / "startup_radar.db"
 
 
@@ -40,6 +63,20 @@ _ADDED_COLUMNS = {
         # enrich_sponsorship.py.
         ("sponsorship", "TEXT"),
         ("sponsorship_evidence", "TEXT DEFAULT ''"),
+        # 0-based rank from targets.industry_priority, or NULL when nothing
+        # matched. Written by set_priorities.py; see JobFilter.industry_rank.
+        ("industry_rank", "INTEGER"),
+    ],
+    "tracker_status": [
+        # What comp was actually discussed, and at which stage. The tracker
+        # read "not discussed" all the way down, which is why the
+        # seniority-vs-compensation question could not be settled from our own
+        # data. Free text on purpose — "recruiter said 165-185, 9 Sep" carries
+        # more than a number would.
+        ("comp_discussed", "TEXT DEFAULT ''"),
+        # How the market levelled him, in their words. Filled in from the
+        # question to ask recruiters directly: how does my seniority read?
+        ("perceived_seniority", "TEXT DEFAULT ''"),
     ],
 }
 
@@ -919,18 +956,25 @@ def get_all_job_matches() -> pd.DataFrame:
     try:
         df = pd.read_sql_query(
             """SELECT company_name, company_description, role_title,
-                      location, url, priority, source, status, date_found, notes
+                      location, url, priority, source, industry_rank,
+                      status, date_found, notes
                FROM job_matches ORDER BY date_found DESC, id DESC""",
             conn,
         )
     finally:
         conn.close()
     df.columns = [
-        "Company", "Company Description", "Role",
-        "Location", "Link", "Priority", "Source", "Status", "Date Found", "Notes",
+        "Company", "Company Description", "Role", "Location", "Link",
+        "Priority", "Source", "Industry", "Status", "Date Found", "Notes",
     ]
     df["Status"] = df["Status"].fillna("")
     df["Notes"] = df["Notes"].fillna("")
+    # industry_rank is stored as the 0-based position in targets.industry_priority
+    # so the ordering can change without rewriting every row. Rows that matched
+    # nothing, and rows not yet passed through set_priorities.py, show blank —
+    # which reads as "no preference expressed", not "worst".
+    _labels = industry_labels()
+    df["Industry"] = df["Industry"].map(lambda r: _labels.get(r, "") if pd.notna(r) else "")
     return df
 
 
@@ -1089,25 +1133,41 @@ def get_tracker_status(company_name: str) -> dict:
     conn = _connect()
     try:
         row = conn.execute(
-            "SELECT status, role, notes FROM tracker_status WHERE company_name = ? COLLATE NOCASE",
+            "SELECT status, role, notes, COALESCE(comp_discussed,''), "
+            "COALESCE(perceived_seniority,'') FROM tracker_status "
+            "WHERE company_name = ? COLLATE NOCASE",
             (company_name,),
         ).fetchone()
-        return {"status": row[0], "role": row[1], "notes": row[2]} if row else {}
+        return {"status": row[0], "role": row[1], "notes": row[2],
+                "comp_discussed": row[3], "perceived_seniority": row[4]} if row else {}
     finally:
         conn.close()
 
 
-def upsert_tracker_status(company_name: str, status: str, role: str = "", notes: str = "") -> None:
+def upsert_tracker_status(company_name: str, status: str, role: str = "",
+                          notes: str = "", comp_discussed=None,
+                          perceived_seniority=None) -> None:
+    """Write a tracker row, leaving unnamed fields alone.
+
+    `comp_discussed` and `perceived_seniority` default to None rather than "",
+    and None means "don't touch". Every existing caller passes four positional
+    arguments; if those two were overwritten on each call, the dashboard's
+    ordinary status edits would silently erase them.
+    """
+    extra = {"comp_discussed": comp_discussed,
+             "perceived_seniority": perceived_seniority}
+    given = {k: v for k, v in extra.items() if v is not None}
+    cols = ["company_name", "status", "role", "notes", *given]
+    sets = ["status = excluded.status", "role = excluded.role",
+            "notes = excluded.notes"] + [f"{k} = excluded.{k}" for k in given]
     conn = _connect()
     try:
         conn.execute(
-            """INSERT INTO tracker_status (company_name, status, role, notes)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT(company_name) DO UPDATE SET
-                   status = excluded.status,
-                   role = excluded.role,
-                   notes = excluded.notes""",
-            (company_name, status, role, notes),
+            f"""INSERT INTO tracker_status ({", ".join(cols)})
+                VALUES ({", ".join("?" * len(cols))})
+                ON CONFLICT(company_name) DO UPDATE SET
+                    {", ".join(sets)}""",
+            (company_name, status, role, notes, *given.values()),
         )
         conn.commit()
     finally:
@@ -1117,8 +1177,13 @@ def upsert_tracker_status(company_name: str, status: str, role: str = "", notes:
 def get_all_tracker_statuses() -> dict:
     conn = _connect()
     try:
-        rows = conn.execute("SELECT company_name, status, role, notes FROM tracker_status").fetchall()
-        return {r[0]: {"status": r[1], "role": r[2], "notes": r[3]} for r in rows}
+        rows = conn.execute(
+            "SELECT company_name, status, role, notes, "
+            "COALESCE(comp_discussed,''), COALESCE(perceived_seniority,'') "
+            "FROM tracker_status").fetchall()
+        return {r[0]: {"status": r[1], "role": r[2], "notes": r[3],
+                       "comp_discussed": r[4], "perceived_seniority": r[5]}
+                for r in rows}
     finally:
         conn.close()
 
@@ -1142,12 +1207,16 @@ def get_tracker_summary() -> pd.DataFrame:
         rows = []
         for (name,) in companies:
             ts = conn.execute(
-                "SELECT status, role, notes FROM tracker_status WHERE company_name = ? COLLATE NOCASE",
+                "SELECT status, role, notes, COALESCE(comp_discussed,''), "
+                "COALESCE(perceived_seniority,'') FROM tracker_status "
+                "WHERE company_name = ? COLLATE NOCASE",
                 (name,),
             ).fetchone()
             status = ts[0] if ts else "In Progress"
             role = ts[1] if ts else ""
             tracker_notes = ts[2] if ts else ""
+            comp_discussed = ts[3] if ts else ""
+            perceived_seniority = ts[4] if ts else ""
 
             acts = conn.execute(
                 """SELECT activity_type, contact_name, contact_title, date, follow_up_date, notes, role_title
@@ -1190,11 +1259,14 @@ def get_tracker_summary() -> pd.DataFrame:
                 "Contacts": ", ".join(contacts),
                 "Activities": " → ".join(timeline),
                 "Follow-up": next_followup,
+                "Comp Discussed": comp_discussed,
+                "Perceived Seniority": perceived_seniority,
                 "Notes": " | ".join(notes_parts),
             })
 
         return pd.DataFrame(rows) if rows else pd.DataFrame(
-            columns=["Company", "Status", "Role", "Contacts", "Activities", "Follow-up", "Notes"]
+            columns=["Company", "Status", "Role", "Contacts", "Activities",
+                     "Follow-up", "Comp Discussed", "Perceived Seniority", "Notes"]
         )
     finally:
         conn.close()

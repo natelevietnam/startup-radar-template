@@ -58,9 +58,22 @@ COMP_FLOOR = 150_000  # base-salary deal-breaker
 
 
 def _max_years() -> int:
-    """targets.max_years_experience, or 0 when the rule is switched off."""
-    cap = (_load_config().get("targets", {}) or {}).get("max_years_experience")
-    return cap if isinstance(cap, int) else 0
+    """The band top above which a posting's years figure is worth surfacing.
+
+    Prefers `soft_years_experience` over `max_years_experience`. The two bars
+    do different jobs: `max` is the hard cut, and anything past it has already
+    been filed as Not Interested, so a badge keyed to it would never render on
+    a board that only shows undecided rows. `soft` is the top of the target
+    band, and the 6-to-9-year rows between the bars are exactly the ones worth
+    seeing with the number attached. Falls back to `max` when no soft bar is
+    set, and 0 when neither is — which switches the badge off.
+    """
+    targets = _load_config().get("targets", {}) or {}
+    for key in ("soft_years_experience", "max_years_experience"):
+        v = targets.get(key)
+        if isinstance(v, int):
+            return v
+    return 0
 CATEGORIZED = {"applied", "wishlist", "interested", "not interested"}
 
 # A stale dossier at or above this score is worth re-researching automatically;

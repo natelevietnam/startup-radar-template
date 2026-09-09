@@ -59,6 +59,13 @@ targets:
   # Roughly a third of postings are readable; the rest keep NULL and are never
   # excluded, because an unread requirement is not an exceeded one.
   # Comment out to disable.
+  # The top of your band, and a softer bar than the one below. A posting
+  # between `soft` and `max` is marked Low priority with the figure shown and
+  # stays on the board; only above `max` is it filed as Not Interested. Set
+  # both to the same number for the old single-cut behaviour, or comment this
+  # one out to disable the middle band.
+  soft_years_experience: 5
+
   max_years_experience: 7
 
   # Drop postings that explicitly refuse visa sponsorship. Same shape as the
@@ -92,6 +99,17 @@ targets:
     - machine learning
     - developer tools
     - saas
+
+  # Optional: the same industries again, but RANKED most-wanted first.
+  # `industries` above is a yes/no membership test; this one expresses
+  # preference, and set_priorities.py uses it to let a top-ranked row clear the
+  # High bar at a slightly lower fit score. Each entry is a group of substrings
+  # matched against company name, description and role title; the first group
+  # that matches wins. Omit the key entirely to rank every industry equally.
+  industry_priority:
+    - [ai, artificial intelligence, machine learning]
+    - [developer tools, infrastructure]
+    - [saas]
 
   # Minimum funding stage. Options: pre-seed, seed, series-a, series-b, series-c, any
   min_stage: series-a

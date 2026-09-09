@@ -605,9 +605,15 @@ elif page == "Job Matches":
             _srcs = sorted(x for x in df_jobs.get("Source", pd.Series(dtype=str))
                            .dropna().unique()) if "Source" in df_jobs.columns else []
             f_source = st.multiselect("Source", _srcs, key="f_source") if _srcs else []
+            _inds = [v for v in database.industry_labels().values()]
+            f_industry = st.multiselect(
+                "Industry", _inds + ["Unranked"], key="f_industry",
+                help="Ranked by targets.industry_priority, most-wanted first. "
+                     "Unranked covers rows matching none of the groups.") if _inds else []
             f_since = st.text_input("Found on or after (YYYY-MM-DD)", key="f_since")
         if st.button("Clear column filters", key="clear_job_filters"):
-            for _k in ("f_company", "f_role", "f_loc", "job_priority", "f_source", "f_since"):
+            for _k in ("f_company", "f_role", "f_loc", "job_priority", "f_source",
+                       "f_industry", "f_since"):
                 st.session_state.pop(_k, None)
             st.rerun()
 
@@ -629,6 +635,13 @@ elif page == "Job Matches":
             filtered_jobs["Location"].str.contains(f_loc, case=False, na=False)]
     if f_source and "Source" in filtered_jobs.columns:
         filtered_jobs = filtered_jobs[filtered_jobs["Source"].isin(f_source)]
+    if f_industry and "Industry" in filtered_jobs.columns:
+        _ind = filtered_jobs["Industry"].fillna("").str.strip()
+        _want = [x for x in f_industry if x != "Unranked"]
+        _imask = _ind.isin(_want)
+        if "Unranked" in f_industry:
+            _imask = _imask | (_ind == "")
+        filtered_jobs = filtered_jobs[_imask]
     if f_since.strip():
         filtered_jobs = filtered_jobs[
             filtered_jobs["Date Found"].fillna("").astype(str) >= f_since.strip()]
@@ -715,6 +728,10 @@ elif page == "Job Matches":
         "Source": st.column_config.TextColumn(
             "Source", width="small", disabled=True,
             help="Which feed served this posting \u2014 read-only, it comes from ingest"),
+        "Industry": st.column_config.TextColumn(
+            "Industry", width="small", disabled=True,
+            help="Rank from targets.industry_priority. Blank means the row "
+                 "matched no group, or has not been through set_priorities.py."),
         "Priority": st.column_config.SelectboxColumn(
             "Priority", options=PRIORITY_OPTIONS, width="small",
             help="Ranking only \u2014 a Low row stays in the queue, it just sorts down."),
@@ -1214,6 +1231,14 @@ elif page == "Application Tracker":
 
     _applied_col_config = {
         "Status": st.column_config.SelectboxColumn("Status", options=APPLIED_STATUS_OPTIONS, width="small"),
+        "Comp Discussed": st.column_config.TextColumn(
+            "Comp Discussed", width="medium",
+            help="What was actually said, and when — e.g. \"recruiter: 165-185 base, 9 Sep\". "
+                 "Free text on purpose; a number alone loses the stage it came from."),
+        "Perceived Seniority": st.column_config.TextColumn(
+            "Perceived Seniority", width="medium",
+            help="How they levelled you, in their words. Ask recruiters directly: "
+                 "how does my seniority read on paper and in conversation?"),
         "Notes": st.column_config.TextColumn("Notes", width="large"),
         "\U0001f5d1\ufe0f": st.column_config.CheckboxColumn("\U0001f5d1\ufe0f", width="small"),
     }
@@ -1232,8 +1257,19 @@ elif page == "Application Tracker":
             new_s = edited_df.loc[idx, "Status"] or ""
             new_r = edited_df.loc[idx, "Role"] or ""
             new_n = edited_df.loc[idx, "Notes"] or ""
-            if old_s != new_s or (original_df.loc[idx, "Role"] or "") != new_r or (original_df.loc[idx, "Notes"] or "") != new_n:
-                database.upsert_tracker_status(company, new_s, new_r, new_n)
+            new_c = edited_df.loc[idx, "Comp Discussed"] or ""
+            new_p = edited_df.loc[idx, "Perceived Seniority"] or ""
+            if (old_s != new_s
+                    or (original_df.loc[idx, "Role"] or "") != new_r
+                    or (original_df.loc[idx, "Notes"] or "") != new_n
+                    or (original_df.loc[idx, "Comp Discussed"] or "") != new_c
+                    or (original_df.loc[idx, "Perceived Seniority"] or "") != new_p):
+                # Always pass both new fields, never None: inside this editor a
+                # cleared cell is a deliberate blanking, and the preserve-on-None
+                # rule in upsert_tracker_status would quietly undo it.
+                database.upsert_tracker_status(company, new_s, new_r, new_n,
+                                               comp_discussed=new_c,
+                                               perceived_seniority=new_p)
                 changed = True
         return changed
 

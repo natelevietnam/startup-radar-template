@@ -215,6 +215,19 @@ class JobFilter:
         # by enrich_experience.py rather than supplied by any feed.
         cap = targets.get("max_years_experience")
         self.max_years_experience = cap if isinstance(cap, int) else None
+        # The top of the target band, and a softer bar than the cap above.
+        # Between the two, a posting is out of band but not out of the running:
+        # it is marked Low and kept, not filed. Defaults to the cap, which
+        # restores the old single-bar behaviour when the key is absent.
+        soft = targets.get("soft_years_experience")
+        self.soft_years_experience = soft if isinstance(soft, int) else self.max_years_experience
+        # Industries ranked most-wanted first, as groups of substrings.
+        # `industries` is a membership test; this expresses preference.
+        self._industry_priority = [
+            [str(t).lower().strip() for t in group if str(t).strip()]
+            for group in (targets.get("industry_priority") or [])
+            if isinstance(group, (list, tuple))
+        ]
         # Matched against the feed-supplied "level: X" marker, not the title.
         self.level_exclusions = [
             lv.lower().strip() for lv in targets.get("level_exclusions", []) if lv.strip()
@@ -278,6 +291,46 @@ class JobFilter:
         if self.max_years_experience is None or not isinstance(years_required, int):
             return False
         return years_required > self.max_years_experience
+
+    def experience_deprioritized(self, years_required) -> bool:
+        """True if a posting sits above the band but below the hard cut.
+
+        The band top is `soft_years_experience`; the cut is
+        `max_years_experience`. A 6-year req when the band tops out at 5 is a
+        stretch worth seeing with the number attached, not a row to file — the
+        coaching was explicit that a JD requirement is a question to ask, not a
+        reason to self-disqualify. Above the cap, `experience_excluded` takes
+        over and the row goes.
+
+        Same contract as `experience_excluded`: only ever called with a figure
+        actually read off a posting, and an unknown requirement is not an
+        exceeded one.
+        """
+        if self.soft_years_experience is None or not isinstance(years_required, int):
+            return False
+        if self.experience_excluded(years_required):
+            return False          # past the cap — that is a cut, not a demotion
+        return years_required > self.soft_years_experience
+
+    def industry_rank(self, *parts: str):
+        """0-based rank of the best-matching industry group, or None.
+
+        Groups come from `targets.industry_priority`, most-wanted first, and
+        the first group that matches wins — so narrower terms belong in the
+        earlier groups. Matched against whatever text the caller passes
+        (company name, description, role title). Returns None when nothing
+        matches or no ordering is configured, which callers read as "no
+        preference expressed", never as "worst".
+        """
+        if not self._industry_priority:
+            return None
+        text = " ".join(p for p in parts if p).lower()
+        if not text:
+            return None
+        for i, group in enumerate(self._industry_priority):
+            if any(term in text for term in group):
+                return i
+        return None
 
     def sponsorship_excluded(self, sponsorship) -> bool:
         """True if a posting explicitly refuses visa sponsorship.

@@ -15,10 +15,20 @@ REPO="${REPO:-natelevietnam/startup-radar-template}"
 SRC="${1:-config.yaml}"
 [ -f "$SRC" ] || { echo "no such file: $SRC" >&2; exit 1; }
 
+# Prefer the project venv. A bare `python3` on macOS is /usr/bin/python3, which
+# has no PyYAML, so the verification below died with ModuleNotFoundError and
+# set -e aborted the script before anything was uploaded - silently, as far as
+# the secret was concerned. The fallback check further down keeps this working
+# even on an interpreter without PyYAML.
+PY_BIN="python3"
+for candidate in "$(dirname "$0")/.venv/bin/python" ./.venv/bin/python; do
+  [ -x "$candidate" ] && { PY_BIN="$candidate"; break; }
+done
+
 OUT="$(mktemp -t config.cloud)"
 trap 'rm -f "$OUT"' EXIT
 
-python3 - "$SRC" > "$OUT" <<'PREP'
+"$PY_BIN" - "$SRC" > "$OUT" <<'PREP'
 import re, sys
 text = open(sys.argv[1]).read()
 def disable(block):
@@ -28,9 +38,28 @@ PREP
 
 # Refuse to upload a config the edit missed - a renamed key or a changed indent
 # would otherwise sail through and ship the exact setting this guards against.
-python3 - "$OUT" <<'CHECK'
-import sys, yaml
-cfg = yaml.safe_load(open(sys.argv[1])) or {}
+"$PY_BIN" - "$OUT" <<'CHECK'
+import re, sys
+
+path = sys.argv[1]
+text = open(path).read()
+
+try:
+    import yaml
+except ModuleNotFoundError:
+    # No PyYAML on this interpreter. Fall back to reading the block textually
+    # rather than skipping the check - an unverified upload is the one outcome
+    # this script exists to prevent.
+    block = re.search(r'(  waas_messages:\n(?:    .*\n)*)', text)
+    if not block:
+        sys.exit("sources.waas_messages not found - has the config layout "
+                 "changed? Nothing was uploaded.")
+    if re.search(r'\n\s+enabled:\s*true\b', block.group(0)):
+        sys.exit("waas_messages is still enabled after the edit. Nothing was uploaded.")
+    print("(verified without PyYAML - install it for the stricter check)")
+    raise SystemExit(0)
+
+cfg = yaml.safe_load(text) or {}
 waas = ((cfg.get("sources") or {}).get("waas_messages") or {})
 if not waas:
     sys.exit("sources.waas_messages not found - has the config layout changed? "

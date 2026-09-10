@@ -138,13 +138,25 @@ def _probe_wellfound(url: str):
 
 
 def _probe_linkedin(url: str):
-    """LinkedIn rate-limits hard (429) but does discriminate once it answers.
+    """LinkedIn discriminates once it answers, but only in one direction.
 
     Job URLs come in two shapes and BOTH must be handled — `/jobs/view/<id>`
     and the slug form `/jobs/view/<slug>-at-<company>-<id>`. Matching only the
     numeric form silently skipped every slug-form row.
 
-    A 429 returns None (unconfirmed → kept), never a dead verdict.
+    A closed marker in the body is trustworthy: six rows were correctly pruned
+    on it in the 2026-09-10 sweep. Its ABSENCE is not. Tessera Labs job
+    4409369740 was closed — visibly so to a signed-in browser — while the page
+    served to an anonymous fetch carried zero closed markers across 303KB and a
+    <title> still reading "Tessera Labs hiring Product Manager". LinkedIn
+    renders that state behind auth for some postings and not others, seemingly
+    depending on whether the posting expired or was closed by the poster, and
+    nothing in the anonymous response distinguishes the two cases.
+
+    So a 200 with no marker returns a reason that does NOT end in "live",
+    which files the row as unconfirmed rather than confirmed-live. Nothing is
+    deleted on that basis — it just stops the sweep claiming a certainty it
+    does not have. A 429 likewise returns None (unconfirmed → kept).
     """
     if "linkedin.com/jobs/view/" not in url:
         return None
@@ -167,7 +179,9 @@ def _probe_linkedin(url: str):
             for marker in _DEAD_TXT:
                 if marker in body:
                     return True, f"linkedin 200 but '{marker}'"
-            return False, "linkedin live"
+            # Deliberately not "...live": see the docstring. Absence of a
+            # closed marker on LinkedIn is not evidence the posting is open.
+            return False, "linkedin 200, closed state not visible to anonymous fetch"
         return None
     return None  # still throttled — unconfirmed, keep
 

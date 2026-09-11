@@ -25,8 +25,11 @@ for candidate in "$(dirname "$0")/.venv/bin/python" ./.venv/bin/python; do
   [ -x "$candidate" ] && { PY_BIN="$candidate"; break; }
 done
 
-OUT="$(mktemp -t config.cloud)"
-trap 'rm -f "$OUT"' EXIT
+# Written to a stable, predictable path rather than a random temp name, and
+# kept on failure: if `gh` cannot write the secret for any reason, this file is
+# what you paste into the GitHub web UI instead (Settings -> Secrets and
+# variables -> Actions -> CONFIG_YAML -> Update).
+OUT="${TMPDIR:-/tmp}/startup-radar-config.cloud.yaml"
 
 "$PY_BIN" - "$SRC" > "$OUT" <<'PREP'
 import re, sys
@@ -68,7 +71,41 @@ if waas.get("enabled") is True:
     sys.exit("waas_messages is still enabled after the edit. Nothing was uploaded.")
 CHECK
 
+FP="$(shasum -a 256 "$OUT" | cut -c1-16)"
+
+# What GitHub says the secret's timestamp is BEFORE we write, so the write can
+# be proven rather than assumed. Three rounds of this loop failed silently:
+# the script reported success while the stored secret never changed, and the
+# daily run kept failing on a config nobody could see was stale.
+BEFORE="$(gh api "repos/$REPO/actions/secrets/CONFIG_YAML" -q .updated_at 2>/dev/null || echo "none")"
+
+set +e
 gh secret set CONFIG_YAML -R "$REPO" < "$OUT"
+RC=$?
+set -e
+if [ "$RC" -ne 0 ]; then
+  echo >&2
+  echo "gh secret set exited $RC - the secret was NOT updated." >&2
+  echo "Paste this file into the web UI instead:" >&2
+  echo "  $OUT" >&2
+  echo "  https://github.com/$REPO/settings/secrets/actions" >&2
+  exit "$RC"
+fi
+
+AFTER="$(gh api "repos/$REPO/actions/secrets/CONFIG_YAML" -q .updated_at 2>/dev/null || echo "unknown")"
+if [ "$AFTER" = "$BEFORE" ]; then
+  echo >&2
+  echo "gh reported success, but GitHub still shows the secret last updated at" >&2
+  echo "  $AFTER" >&2
+  echo "The write did NOT land. Paste this file into the web UI instead:" >&2
+  echo "  $OUT" >&2
+  echo "  https://github.com/$REPO/settings/secrets/actions" >&2
+  exit 1
+fi
+
+rm -f "$OUT"
 echo "CONFIG_YAML updated on $REPO"
-echo "config fingerprint: $(shasum -a 256 "$OUT" | cut -c1-16)"
+echo "  was: $BEFORE"
+echo "  now: $AFTER"
+echo "config fingerprint: $FP"
 echo "The next daily run prints the same line; if they differ, the secret is stale."

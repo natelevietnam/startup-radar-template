@@ -34,12 +34,26 @@ _UA = {
 }
 
 # Strong "this posting is gone" markers on a 200 page (lowercased substring match).
+#
+# Every entry must be a phrase that can only mean the posting itself is gone.
+# Bare "expired" is deliberately NOT here: it also appears in "your session has
+# expired" on a login wall and in unrelated body copy, and a login wall is the
+# one thing we must never read as a dead posting.
 _DEAD_TXT = (
     "no longer available", "no longer accepting", "position has been filled",
     "this job is no longer", "posting is closed", "job not found", "req is closed",
     "this role is no longer", "not currently accepting", "position is no longer",
     "this position is closed", "opening is no longer", "404 - not found",
     "page not found", "oops! we can't find",
+    # Expiry wording (added 2026-09-11). Boards that keep an expired req
+    # reachable say so in the body and still return 200, so nothing above
+    # catches them.
+    "this job post has expired", "this job posting has expired",
+    "this posting has expired", "this job has expired",
+    "this position has expired", "this listing has expired",
+    "this job ad has expired", "job posting has expired",
+    "posting has now expired", "this vacancy has expired",
+    "the application deadline has passed", "applications are now closed",
 )
 
 _TIMEOUT = 12

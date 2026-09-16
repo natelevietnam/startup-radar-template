@@ -497,9 +497,25 @@ def clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", _ZERO_WIDTH.sub("", value or "")).strip()
 
 
+# A company whose name IS its domain gets spelled both ways by the feeds:
+# Ashby said "Jerry", Wellfound said "Jerry.ai", and the two canonicalised to
+# "jerry" and "jerry ai" because flattening punctuation turns the dot into a
+# space. Different keys meant the decided-key check missed, and a role already
+# marked Applied re-inserted as a fresh Uncategorized row.
+#
+# Stripped only when the tail follows a DOT, never a space. That distinction is
+# the whole safety margin: "Jerry.ai" and "Jerry" are one employer, but
+# "Scale AI" and "Scale" are not, and neither are "Character AI" and
+# "Character". Matching on the dot leaves every spaced form untouched.
+_COMPANY_TLD = re.compile(
+    r"\.(ai|io|com|co|dev|app|xyz|tech|so|sh)\s*$", re.IGNORECASE
+)
+
+
 def canon_company(company_name: str) -> str:
     """Canonical employer name — punctuation, aliases and legal suffixes out."""
-    c = _COMPANY_ALIAS.sub(" ", company_name or "")
+    c = _COMPANY_TLD.sub("", (company_name or "").strip())
+    c = _COMPANY_ALIAS.sub(" ", c)
     c = re.sub(r"[^a-z0-9]+", " ", c.lower())
     c = _COMPANY_SUFFIX.sub(" ", c)
     return re.sub(r"\s+", " ", c).strip()

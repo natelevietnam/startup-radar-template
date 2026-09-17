@@ -86,6 +86,13 @@ _REFUSE = [
     r"\bcannot sponsor\b",
     r"\bno (visa |work )?sponsorship\b",
     r"\bsponsorship is not (available|offered|provided|possible)\b",
+    # Label form, no verb: Wellfound renders a structured field as
+    # "Visa Sponsorship Not Available". The pattern above needs the "is" and
+    # missed it, while the OFFER list already matched the positive label
+    # "Visa Sponsorship Available" — so a board that states the refusal
+    # plainly was read as silent while its sponsoring twin was read as an
+    # offer. That asymmetry kept non-sponsoring roles on the board.
+    r"\bsponsorship:?\s+not\s+(available|offered|provided)\b",
     r"\bnot eligible for (visa |work |employment )?sponsorship\b",
     r"\b(unable|not able) to sponsor\b",
     r"\bwho do not require (visa |work |employment )?sponsorship\b",
@@ -197,7 +204,51 @@ def _text_smartrecruiters(url: str):
     return "smartrecruiters-api", _strip_html(json.dumps(resp.json().get("jobAd", {})))
 
 
-_TEXT_SOURCES = (_text_greenhouse, _text_ashby, _text_smartrecruiters)
+def _text_wellfound(url: str):
+    """Wellfound's posting text, via the canonical /jobs/<slug> path.
+
+    The `?job_listing_slug=` form the feeds hand us is a client-rendered
+    shell: it returns HTTP 200 and a byte-identical 239KB body for EVERY
+    slug, carrying site navigation and nothing else. That body strips to
+    ~10,500 characters, so it sails past the short-body guard in `_fetch`
+    and gets classified as `silent` — read, said nothing — when in truth it
+    was never read at all. Wellfound rows were therefore never excluded no
+    matter what the posting said.
+
+    The canonical path does serve the posting: a JSON-LD JobPosting plus a
+    structured "Visa Sponsorship: Available / Not Available" field, which is
+    the most reliable sponsorship signal any source on this board publishes.
+    Both are returned, the label first so a sentence in the description
+    cannot outvote the employer's own structured answer.
+    """
+    m = re.search(r"wellfound\.com/(?:jobs\?job_listing_slug=|jobs/)([\w-]+)", url)
+    if not m:
+        return None
+    resp = requests.get(f"https://wellfound.com/jobs/{m.group(1)}",
+                        headers=_UA, timeout=_TIMEOUT, allow_redirects=True)
+    if resp.status_code != 200:
+        return None
+    body = resp.text
+    parts = []
+    label = re.search(r"Visa\s+Sponsorship\s*:?\s*(Not\s+Available|Available)",
+                      _strip_html(body), re.IGNORECASE)
+    if label:
+        parts.append(f"Visa Sponsorship {label.group(1)}.")
+    for blk in re.findall(r"<script[^>]+application/ld\+json[^>]*>(.*?)</script>",
+                          body, re.S):
+        try:
+            doc = json.loads(blk)
+        except Exception:
+            continue
+        if isinstance(doc, dict) and doc.get("@type") == "JobPosting":
+            parts.append(_strip_html(doc.get("description", "")))
+    if not parts:
+        return None
+    return "wellfound-canonical", " ".join(parts)
+
+
+_TEXT_SOURCES = (_text_greenhouse, _text_ashby, _text_smartrecruiters,
+                 _text_wellfound)
 
 
 def _fetch(row: dict) -> tuple[dict, str | None, str, str]:

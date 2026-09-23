@@ -512,13 +512,35 @@ _COMPANY_TLD = re.compile(
 )
 
 
+# Companies that renamed themselves. No amount of punctuation-flattening can
+# connect "Abnormal Security" to "Abnormal AI" — they share a word, not a form
+# — so a rebrand needs a table, and the feeds keep both names alive for months
+# after the change. Abnormal split three ways here: the company's own Greenhouse
+# still said "Abnormal Security", Jobright said "Abnormal AI", and the domain
+# spelling "abnormal.ai" fell through _COMPANY_TLD to a bare "abnormal". Three
+# keys meant two dossiers scored the same employer 73 and 62, the same req
+# landed twice, and a declined role could return clean under the other name.
+#
+# Keyed on the *output* of the normalisation below, not on raw feed spellings,
+# so "Abnormal Security Corporation" and "Abnormal Security, Inc." arrive here
+# already folded and need no entries of their own. Map only a genuine rename of
+# one legal entity; two companies that merely sound alike must stay apart.
+_COMPANY_REBRAND = {
+    # Abnormal Security Corporation -> Abnormal AI, Inc. (2025-04-16), a return
+    # to the name it launched under in 2018. abnormal.ai.
+    "abnormal security": "abnormal ai",
+    "abnormal": "abnormal ai",
+}
+
+
 def canon_company(company_name: str) -> str:
-    """Canonical employer name — punctuation, aliases and legal suffixes out."""
+    """Canonical employer name — punctuation, aliases, suffixes and rebrands out."""
     c = _COMPANY_TLD.sub("", (company_name or "").strip())
     c = _COMPANY_ALIAS.sub(" ", c)
     c = re.sub(r"[^a-z0-9]+", " ", c.lower())
     c = _COMPANY_SUFFIX.sub(" ", c)
-    return re.sub(r"\s+", " ", c).strip()
+    c = re.sub(r"\s+", " ", c).strip()
+    return _COMPANY_REBRAND.get(c, c)
 
 
 # Query parameters that identify the *referrer*, not the posting. Everything

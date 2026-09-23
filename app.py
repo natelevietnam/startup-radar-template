@@ -11,7 +11,7 @@ import json
 import re
 import subprocess
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -590,7 +590,7 @@ elif page == "Job Matches":
     with st.expander("Filter by column", expanded=bool(
             st.session_state.get("job_priority") or st.session_state.get("f_company")
             or st.session_state.get("f_role") or st.session_state.get("f_loc")
-            or st.session_state.get("f_source"))):
+            or st.session_state.get("f_source") or st.session_state.get("f_found"))):
         _c1, _c2, _c3 = st.columns(3)
         with _c1:
             f_company = st.multiselect(
@@ -610,10 +610,30 @@ elif page == "Job Matches":
                 "Industry", _inds + ["Unranked"], key="f_industry",
                 help="Ranked by targets.industry_priority, most-wanted first. "
                      "Unranked covers rows matching none of the groups.") if _inds else []
-            f_since = st.text_input("Found on or after (YYYY-MM-DD)", key="f_since")
+            # "Date Found" is an ISO YYYY-MM-DD string, so a lexical compare is
+            # a date compare and no parsing is needed on the filtering side.
+            # Bounded to the dates actually present: a picker that can select a
+            # window containing no rows invites the "why is it empty" dead end
+            # the old free-text box already caused by silently accepting
+            # "9/22/2026" and matching nothing.
+            _found_seen = df_jobs["Date Found"].dropna().astype(str)
+            _found_seen = _found_seen[_found_seen.str.fullmatch(r"\d{4}-\d{2}-\d{2}")]
+            _d_lo = _d_hi = None
+            if not _found_seen.empty:
+                try:
+                    _d_lo = date.fromisoformat(_found_seen.min())
+                    _d_hi = date.fromisoformat(_found_seen.max())
+                except ValueError:
+                    _d_lo = _d_hi = None
+            f_found = st.date_input(
+                "Date found", value=(), key="f_found", format="YYYY-MM-DD",
+                min_value=_d_lo, max_value=_d_hi,
+                help="Pick one day for just that day, or a second to close an "
+                     "inclusive range. Empty means no date filter.",
+            ) if _d_lo is not None else ()
         if st.button("Clear column filters", key="clear_job_filters"):
             for _k in ("f_company", "f_role", "f_loc", "job_priority", "f_source",
-                       "f_industry", "f_since"):
+                       "f_industry", "f_found"):
                 st.session_state.pop(_k, None)
             st.rerun()
 
@@ -642,9 +662,15 @@ elif page == "Job Matches":
         if "Unranked" in f_industry:
             _imask = _imask | (_ind == "")
         filtered_jobs = filtered_jobs[_imask]
-    if f_since.strip():
+    # One date selected filters to that exact day (lo == hi); two give an
+    # inclusive range. st.date_input reports a bare date mid-selection, before
+    # the second click lands, so normalise to a tuple either way.
+    _picked = f_found if isinstance(f_found, (tuple, list)) else (f_found,)
+    if _picked:
+        _found_col = filtered_jobs["Date Found"].fillna("").astype(str)
         filtered_jobs = filtered_jobs[
-            filtered_jobs["Date Found"].fillna("").astype(str) >= f_since.strip()]
+            (_found_col >= _picked[0].isoformat())
+            & (_found_col <= _picked[-1].isoformat())]
 
     if job_priority:
         _p = filtered_jobs["Priority"].fillna("").str.strip()

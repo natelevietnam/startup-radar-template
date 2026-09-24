@@ -89,6 +89,58 @@ def is_product_role(title: str) -> bool:
     return False
 
 
+def _thousands(amount: float, symbol: str = "$") -> str:
+    """"$274,786" as "$275K" — an estimate should not read to the dollar."""
+    return f"{symbol}{round(amount / 1000):,}K"
+
+
+def _format_comp(comp: dict) -> str:
+    """Describe the feed's ``comp`` object as the market data it actually is.
+
+    This is **not** the band in the posting. The object carries ``median``,
+    ``tier``, ``sourceReportCount`` and a ``sourceUrl`` pointing at
+    ``levels.fyi/companies/<company>/salaries/product-manager``: it is
+    levels.fyi's reported total compensation for that *title at that company*,
+    which the feed attaches to every one of its postings.
+
+    Rendering it as a bare range put fictions in front of real decisions —
+    Samsara as "USD274,786–USD625,833", OpenAI and Hinge Health as flat
+    "USD750,000–USD750,000" and "USD447,000–USD447,000" bands that were never
+    ranges at all. So the source is named, the figures are rounded to the
+    thousand to read as estimates, and a min that equals its max is rendered
+    as the single data point it is rather than as a range.
+    """
+    lo, hi = comp.get("min"), comp.get("max")
+    if not isinstance(lo, (int, float)) or not isinstance(hi, (int, float)):
+        return ""
+    if lo <= 0 or hi <= 0:
+        return ""
+    if hi < lo:
+        lo, hi = hi, lo
+
+    # Only USD carries a "$"; any other currency is named instead, so a figure
+    # never reads as dollars because the dollar sign was hardcoded.
+    cur = (comp.get("currency") or "USD").upper()
+    sym = "$" if cur == "USD" else ""
+    prefix = "levels.fyi" if cur == "USD" else f"levels.fyi {cur}"
+
+    n = comp.get("sourceReportCount")
+    if isinstance(n, int) and n > 0:
+        reports = f"{n} report" + ("s" if n != 1 else "")
+    else:
+        reports = "report count unstated"
+
+    if lo == hi:
+        # One data point, not a band — levels.fyi returns min == max == median
+        # when a single submission (or none) backs the figure.
+        return f"{prefix} ~{_thousands(lo, sym)} ({reports})"
+
+    median = comp.get("median")
+    mid = (f", median {_thousands(median, sym)}"
+           if isinstance(median, (int, float)) and lo <= median <= hi else "")
+    return f"{prefix} {_thousands(lo, sym)}–{_thousands(hi, sym)}{mid} ({reports})"
+
+
 def _format_company_description(job: dict) -> str:
     """Best-effort context line so the dashboard shows something meaningful."""
     company = job.get("company") or {}
@@ -101,12 +153,9 @@ def _format_company_description(job: dict) -> str:
         bits.append(f"level: {level}")
     comp = job.get("comp")
     if isinstance(comp, dict):
-        # comp might carry {min, max, currency} or similar — flatten lightly.
-        amt_min = comp.get("min")
-        amt_max = comp.get("max")
-        cur = comp.get("currency") or "$"
-        if amt_min and amt_max:
-            bits.append(f"{cur}{amt_min:,}–{cur}{amt_max:,}")
+        bit = _format_comp(comp)
+        if bit:
+            bits.append(bit)
     elif isinstance(comp, str):
         bits.append(comp)
     return " • ".join(bits)

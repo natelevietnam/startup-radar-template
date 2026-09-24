@@ -298,6 +298,40 @@ def _parse_linkedin_jobalerts(body: str, subject: str, msg_url: str) -> list[dic
 # --- Jobright.ai alerts (noreply@jobright.ai) -------------------------------
 
 
+# Jobright's salary tag is the posting's own band, unlike the NewPMJobs feed's
+# market data — but the tag is only as good as Jobright's parse of the posting.
+# JD Power arrived on 2026-09-20 as "$90K/yr - $1150K/yr", a million-dollar
+# ceiling for a remote PM role at a market-research firm, and that figure then
+# sat in a cut list as if it were an offer. The number is kept (it is what the
+# alert said) and marked, so it can never be read as verified.
+_JOBRIGHT_COMP_RE = re.compile(r"\$\s*([\d,.]+)\s*([KkMm])?")
+_IMPLAUSIBLE_CEILING = 1_000_000     # /yr, above the top of any PM band seen here
+_IMPLAUSIBLE_SPREAD = 6              # max/min; the widest real band on this board is ~2.5x
+
+
+def _comp_amount(num: str, unit: str | None) -> float | None:
+    try:
+        amount = float(num.replace(",", ""))
+    except ValueError:
+        return None
+    mult = {"k": 1_000, "m": 1_000_000}.get((unit or "").lower(), 1)
+    return amount * mult
+
+
+def _flag_implausible_comp(tag: str) -> str:
+    """Return the salary tag, marked when its own numbers cannot be right."""
+    if not tag:
+        return tag
+    amounts = [a for a in (_comp_amount(n, u)
+                           for n, u in _JOBRIGHT_COMP_RE.findall(tag)) if a]
+    if not amounts:
+        return tag
+    lo, hi = min(amounts), max(amounts)
+    if hi > _IMPLAUSIBLE_CEILING or (lo > 0 and hi / lo > _IMPLAUSIBLE_SPREAD):
+        return f"{tag} (band looks wrong — check the posting)"
+    return tag
+
+
 def _parse_jobright(body: str, subject: str, msg_url: str) -> list[dict]:
     """Parse Jobright.ai job alerts (noreply@jobright.ai).
 
@@ -345,7 +379,7 @@ def _parse_jobright(body: str, subject: str, msg_url: str) -> list[dict]:
             continue
 
         tags = [t.get_text(" ", strip=True) for t in cont.find_all(id="job-tag")]
-        comp = next((t for t in tags if t.startswith("$")), "")
+        comp = _flag_implausible_comp(next((t for t in tags if t.startswith("$")), ""))
         location = next(
             (t for t in tags if not t.startswith("$") and "referral" not in t.lower()),
             "",

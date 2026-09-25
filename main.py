@@ -232,6 +232,23 @@ def run() -> int:
             ]
             if len(jobs) != _n:
                 print(f"  {len(jobs)} after seniority exclusion ({_n - len(jobs)} dropped)")
+            # Hard gate — targets.roles is a POSITIVE requirement, and nothing was
+            # enforcing it. seniority_excluded only rejects listed shapes, so any
+            # title it does not name sailed through however far it sat from the
+            # target: "Product Lead" matches neither "product manager" nor
+            # "product management", is not in seniority_exclusions (which names
+            # "lead product manager", a different string), and matches none of the
+            # title_exclusion_patterns, so it landed as a normal row. 57 rows on
+            # the board fail this gate, 14 of them arriving after the 2026-09-09
+            # narrowing that was meant to drop exactly that shape.
+            #
+            # JobFilter.passes() has always applied role_matches, but nothing calls
+            # it for jobs — the gate existed and never ran, the same way
+            # same_company_candidates never ran before #31.
+            _n = len(jobs)
+            jobs = [j for j in jobs if flt.role_matches(j.get("role_title", ""))]
+            if len(jobs) != _n:
+                print(f"  {len(jobs)} after role gate ({_n - len(jobs)} dropped)")
             # Hard gate — applies even to sources that skip location filtering.
             _n = len(jobs)
             jobs = [j for j in jobs if not flt.location_excluded(j.get("location", ""))]
@@ -285,6 +302,23 @@ def run() -> int:
             ]
             if len(jobs) != _n:
                 print(f"  {len(jobs)} after seniority exclusion ({_n - len(jobs)} dropped)")
+            # Hard gate — targets.roles is a POSITIVE requirement, and nothing was
+            # enforcing it. seniority_excluded only rejects listed shapes, so any
+            # title it does not name sailed through however far it sat from the
+            # target: "Product Lead" matches neither "product manager" nor
+            # "product management", is not in seniority_exclusions (which names
+            # "lead product manager", a different string), and matches none of the
+            # title_exclusion_patterns, so it landed as a normal row. 57 rows on
+            # the board fail this gate, 14 of them arriving after the 2026-09-09
+            # narrowing that was meant to drop exactly that shape.
+            #
+            # JobFilter.passes() has always applied role_matches, but nothing calls
+            # it for jobs — the gate existed and never ran, the same way
+            # same_company_candidates never ran before #31.
+            _n = len(jobs)
+            jobs = [j for j in jobs if flt.role_matches(j.get("role_title", ""))]
+            if len(jobs) != _n:
+                print(f"  {len(jobs)} after role gate ({_n - len(jobs)} dropped)")
             # Hard gate — applies even to sources that skip location filtering.
             _n = len(jobs)
             jobs = [j for j in jobs if not flt.location_excluded(j.get("location", ""))]
@@ -338,6 +372,23 @@ def run() -> int:
             ]
             if len(jobs) != _n:
                 print(f"  {len(jobs)} after seniority exclusion ({_n - len(jobs)} dropped)")
+            # Hard gate — targets.roles is a POSITIVE requirement, and nothing was
+            # enforcing it. seniority_excluded only rejects listed shapes, so any
+            # title it does not name sailed through however far it sat from the
+            # target: "Product Lead" matches neither "product manager" nor
+            # "product management", is not in seniority_exclusions (which names
+            # "lead product manager", a different string), and matches none of the
+            # title_exclusion_patterns, so it landed as a normal row. 57 rows on
+            # the board fail this gate, 14 of them arriving after the 2026-09-09
+            # narrowing that was meant to drop exactly that shape.
+            #
+            # JobFilter.passes() has always applied role_matches, but nothing calls
+            # it for jobs — the gate existed and never ran, the same way
+            # same_company_candidates never ran before #31.
+            _n = len(jobs)
+            jobs = [j for j in jobs if flt.role_matches(j.get("role_title", ""))]
+            if len(jobs) != _n:
+                print(f"  {len(jobs)} after role gate ({_n - len(jobs)} dropped)")
             # Hard gate — applies even to sources that skip location filtering.
             _n = len(jobs)
             jobs = [j for j in jobs if not flt.location_excluded(j.get("location", ""))]
@@ -391,6 +442,23 @@ def run() -> int:
             ]
             if len(jobs) != _n:
                 print(f"  {len(jobs)} after seniority exclusion ({_n - len(jobs)} dropped)")
+            # Hard gate — targets.roles is a POSITIVE requirement, and nothing was
+            # enforcing it. seniority_excluded only rejects listed shapes, so any
+            # title it does not name sailed through however far it sat from the
+            # target: "Product Lead" matches neither "product manager" nor
+            # "product management", is not in seniority_exclusions (which names
+            # "lead product manager", a different string), and matches none of the
+            # title_exclusion_patterns, so it landed as a normal row. 57 rows on
+            # the board fail this gate, 14 of them arriving after the 2026-09-09
+            # narrowing that was meant to drop exactly that shape.
+            #
+            # JobFilter.passes() has always applied role_matches, but nothing calls
+            # it for jobs — the gate existed and never ran, the same way
+            # same_company_candidates never ran before #31.
+            _n = len(jobs)
+            jobs = [j for j in jobs if flt.role_matches(j.get("role_title", ""))]
+            if len(jobs) != _n:
+                print(f"  {len(jobs)} after role gate ({_n - len(jobs)} dropped)")
             # Hard gate — applies even to sources that skip location filtering.
             _n = len(jobs)
             jobs = [j for j in jobs if not flt.location_excluded(j.get("location", ""))]

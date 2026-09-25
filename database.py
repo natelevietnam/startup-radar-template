@@ -350,23 +350,48 @@ def same_company_candidates(min_signals: int = 3) -> list:
             "       COALESCE(status,'') FROM job_matches")]
     finally:
         conn.close()
-    out, seen = [], set()
-    for i, a in enumerate(rows):
-        for b in rows[i + 1:]:
-            if canon_company(a["company_name"]) == canon_company(b["company_name"]):
-                continue
-            ra, rb = canon_role(a["role_title"]), canon_role(b["role_title"])
-            if not ra or ra != rb:          # the role signal is mandatory
-                continue
-            n = same_company_signals(a, b)
-            if n < min_signals:
-                continue
-            key = tuple(sorted((a["id"], b["id"])))
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append((a, b, n))
-    return out
+    # The role signal is mandatory, so two rows can only pair if they share a
+    # non-empty canonical role. Grouping on that first is what makes this
+    # affordable: the sweep was quadratic over every row, 525,825 pairs at 1,026
+    # rows, and only 6,413 of them — 1.2% — share a role at all. It recomputed
+    # four regex canonicalisations per pair on top of that, so the dashboard
+    # spent 7.9 seconds on this call on every single rerun, including the reruns
+    # a one-cell edit triggers, and including the common case where it finds
+    # nothing to report.
+    #
+    # canon_company and canon_role are hoisted for the same reason — once per
+    # row rather than twice per pair. same_company_signals is left untouched and
+    # still scores every surviving pair, so the output is unchanged; grouping
+    # only skips pairs the role check would have rejected anyway.
+    prepared = []
+    for pos, r in enumerate(rows):
+        role = canon_role(r["role_title"])
+        if role:                            # the role signal is mandatory
+            prepared.append((role, pos, canon_company(r["company_name"]), r))
+
+    by_role: dict = {}
+    for role, pos, company, r in prepared:
+        by_role.setdefault(role, []).append((pos, company, r))
+
+    scored, seen = [], set()
+    for group in by_role.values():
+        for i, (pos_a, co_a, a) in enumerate(group):
+            for pos_b, co_b, b in group[i + 1:]:
+                if co_a == co_b:
+                    continue
+                n = same_company_signals(a, b)
+                if n < min_signals:
+                    continue
+                key = tuple(sorted((a["id"], b["id"])))
+                if key in seen:
+                    continue
+                seen.add(key)
+                scored.append((pos_a, pos_b, a, b, n))
+
+    # Grouping visits pairs in role order; restoring row order keeps the report
+    # reading exactly as it did when the sweep was a straight nested loop.
+    scored.sort(key=lambda t: (t[0], t[1]))
+    return [(a, b, n) for _, _, a, b, n in scored]
 
 
 # DECIDED_STATUSES rows are ones the user has ruled on. A pair where exactly one

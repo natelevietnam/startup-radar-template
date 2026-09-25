@@ -52,8 +52,41 @@ REPORTS_DIR.mkdir(exist_ok=True)
 # ---------------------------------------------------------------------------
 
 
-def load_data():
+def _db_stamp():
+    """Mutation token for the cache keys below.
+
+    Every edit reruns the script, and the reads keyed on this token are the
+    bulk of what a rerun costs. Stamped from the database files rather than a
+    timer so an edit invalidates immediately and an idle rerun does not.
+
+    The -wal file is part of the stamp because _connect() sets
+    journal_mode=WAL: a committed write can sit in the write-ahead log with the
+    main .db file's mtime untouched, so keying on the .db alone would serve a
+    stale board after a status change. Returning a unique object on OSError
+    means a missing or unreadable file never caches.
+    """
+    token = []
+    for suffix in ("", "-wal"):
+        try:
+            st_ = Path(str(database.DB_PATH) + suffix).stat()
+            token.append((st_.st_mtime_ns, st_.st_size))
+        except OSError:
+            return object()
+    return tuple(token)
+
+
+@st.cache_data(show_spinner=False)
+def _load_data(_stamp):
     return database.get_all_startups(), database.get_all_job_matches()
+
+
+@st.cache_data(show_spinner=False)
+def _duplicate_employer_pairs(_stamp):
+    return database.duplicate_employer_pairs()
+
+
+def load_data():
+    return _load_data(_db_stamp())
 
 
 df_startups, df_jobs = load_data()
@@ -533,7 +566,7 @@ elif page == "Job Matches":
     # scores name/slug/title/city instead, and this is where its answer surfaces,
     # next to the grid where a row can actually be deleted.
     try:
-        _dupes = database.duplicate_employer_pairs()
+        _dupes = _duplicate_employer_pairs(_db_stamp())
     except Exception as _dupe_err:                       # never break the page
         _dupes = {"settled": [], "open": []}
         st.caption(f"Duplicate check unavailable: {_dupe_err}")
@@ -867,9 +900,22 @@ elif page == "Job Matches":
 
     st.divider()
 
+    # This grid is the largest on the page and the one least often touched: it
+    # holds every rejection ever filed and grows with each triage pass. A
+    # collapsed st.expander does not save the cost — the contents are still
+    # built and shipped to the browser, collapse is presentation only — so the
+    # grid is gated on an explicit toggle instead. At 592 rows it was ~556KB of
+    # the ~620KB re-serialised on every edit, nine tenths of a payload that had
+    # to be re-rendered to change one Status cell in another grid.
     with st.expander(f"Not Interested ({len(ni_jobs)})"):
         if ni_jobs.empty:
             st.caption("No jobs marked as not interested.")
+        elif not st.checkbox(
+                "Load these rows", key="ni_jobs_show",
+                help="Kept off the page by default. It is the biggest grid here "
+                     "and rebuilding it slows down every edit made anywhere on "
+                     "this tab."):
+            st.caption(f"{len(ni_jobs)} rows — tick to load them.")
         else:
             edited = st.data_editor(
                 _add_delete_col(ni_jobs[display_cols]),

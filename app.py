@@ -527,6 +527,34 @@ elif page == "Job Matches":
             "each row. Your saved review is what Claude reads back."
         )
 
+    # Duplicate employers — one posting on the board twice under two company
+    # names. The pipeline cannot catch these: the names differ, the URLs differ,
+    # and the requisition ids come from different hosts. database's detector
+    # scores name/slug/title/city instead, and this is where its answer surfaces,
+    # next to the grid where a row can actually be deleted.
+    try:
+        _dupes = database.duplicate_employer_pairs()
+    except Exception as _dupe_err:                       # never break the page
+        _dupes = {"settled": [], "open": []}
+        st.caption(f"Duplicate check unavailable: {_dupe_err}")
+
+    if _dupes["settled"] or _dupes["open"]:
+        _lines = []
+        for _undecided, _decided, _n in _dupes["settled"]:
+            _lines.append(
+                f"- **#{_undecided['id']} {_undecided['company_name']}** — "
+                f"you already marked this role *{_decided['status']}* as "
+                f"#{_decided['id']} {_decided['company_name']} "
+                f"(“{_decided['role_title']}”). Delete the copy."
+            )
+        for _a, _b, _n in _dupes["open"]:
+            _lines.append(
+                f"- **#{_a['id']} {_a['company_name']}** and "
+                f"**#{_b['id']} {_b['company_name']}** — same role title and city, "
+                f"both undecided. Keep one."
+            )
+        st.warning("**Same role, two company names**\n\n" + "\n".join(_lines))
+
     if st.button("+ Add Role", key="add_role_btn"):
         st.session_state["show_add_role"] = not st.session_state.get("show_add_role", False)
 

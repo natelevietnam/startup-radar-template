@@ -334,7 +334,7 @@ def same_company_signals(a: dict, b: dict) -> int:
 
 
 def same_company_candidates(min_signals: int = 3) -> list:
-    """Undecided rows that look like the same employer under two names.
+    """Row pairs that look like one employer under two names, at any status.
 
     Surfaced, never merged. The employer behind a name is a fact only a person
     can confirm — "delight.ai" is Sendbird's rebrand and nothing in either
@@ -367,6 +367,39 @@ def same_company_candidates(min_signals: int = 3) -> list:
             seen.add(key)
             out.append((a, b, n))
     return out
+
+
+# DECIDED_STATUSES rows are ones the user has ruled on. A pair where exactly one
+# side is decided is the case worth acting on: the decision was made about a
+# posting, and the same posting is sitting on the board again under another name.
+# Vitalize/Vitalize Care sat like that for three days after an application, and a
+# cut list called the copy a pick — which is what this partition exists to stop.
+def duplicate_employer_pairs(min_signals: int = 3) -> dict:
+    """`same_company_candidates` split by what a reader should do about it.
+
+    Returns {"settled": [...], "open": [...]}, each a list of
+    (undecided_or_first, other, signals) tuples:
+
+    * settled — exactly one side carries a decision. The undecided row is first
+      in the tuple, and it is the copy to remove; the decided row is the record.
+    * open    — neither side is decided. One posting, two rows, no decision yet;
+      a person picks which spelling to keep.
+
+    Pairs where both sides are already decided are dropped: the duplicate cost
+    nothing and there is nothing to do about it.
+    """
+    settled, open_pairs = [], []
+    for a, b, n in same_company_candidates(min_signals):
+        da = (a.get("status") or "").strip() in DECIDED_STATUSES
+        db = (b.get("status") or "").strip() in DECIDED_STATUSES
+        if da and db:
+            continue
+        if da or db:
+            undecided, decided = (b, a) if da else (a, b)
+            settled.append((undecided, decided, n))
+        else:
+            open_pairs.append((a, b, n))
+    return {"settled": settled, "open": open_pairs}
 
 
 def get_existing_req_ids() -> set:

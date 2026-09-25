@@ -486,6 +486,30 @@ def run() -> int:
         except Exception as e:
             _record(failures, "Google Sheets write", e)
 
+    # --- Duplicate employers: one posting arriving under two company names ---
+    # database.same_company_candidates has existed since the ATS-slug work but
+    # nothing ever called it, so it caught nothing: Vitalize/Vitalize Care sat on
+    # the board for three days after an application, and a cut list called the
+    # copy a pick. Reported, never merged — only a person can confirm that two
+    # names are one employer. A report failing must not fail the ingest run, so
+    # this warns rather than joining `failures`.
+    try:
+        dupes = database.duplicate_employer_pairs()
+    except Exception as e:
+        print(f"  Duplicate-employer report skipped: {e}")
+        dupes = {"settled": [], "open": []}
+
+    if dupes["settled"] or dupes["open"]:
+        print("\nPossible duplicate employers — same role title, two company names:")
+        for undecided, decided, signals in dupes["settled"]:
+            print(f"  #{undecided['id']} {undecided['company_name']} is already "
+                  f"{decided['status'].lower()} as #{decided['id']} "
+                  f"{decided['company_name']} — {signals} signals. "
+                  f"Remove the undecided copy.")
+        for a, b, signals in dupes["open"]:
+            print(f"  #{a['id']} {a['company_name']} / #{b['id']} {b['company_name']} "
+                  f"— both undecided, {signals} signals. Keep one spelling.")
+
     if failures:
         print(f"\n{len(failures)} source(s) failed this run:")
         for label, msg in failures:

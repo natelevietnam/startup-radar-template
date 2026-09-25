@@ -62,8 +62,12 @@ def _db_stamp():
     The -wal file is part of the stamp because _connect() sets
     journal_mode=WAL: a committed write can sit in the write-ahead log with the
     main .db file's mtime untouched, so keying on the .db alone would serve a
-    stale board after a status change. Returning a unique object on OSError
-    means a missing or unreadable file never caches.
+    stale board after a status change.
+
+    On OSError this returns a value that is unique per call but still hashable:
+    st.cache_data hashes the key, and a bare object() raises there rather than
+    degrading, so a missing or unreadable database must bypass the cache without
+    breaking the page.
     """
     token = []
     for suffix in ("", "-wal"):
@@ -71,17 +75,23 @@ def _db_stamp():
             st_ = Path(str(database.DB_PATH) + suffix).stat()
             token.append((st_.st_mtime_ns, st_.st_size))
         except OSError:
-            return object()
+            return ("unstamped", time.monotonic_ns())
     return tuple(token)
 
 
+# `stamp` must NOT be named with a leading underscore. st.cache_data
+# deliberately excludes underscore-prefixed arguments from the cache key — the
+# convention for passing unhashable things like connections — so naming it
+# `_stamp` cached these under an empty key and they never invalidated again for
+# the life of the session. A deleted row came straight back on the rerun: the
+# write landed, the board was redrawn from the first snapshot taken at startup.
 @st.cache_data(show_spinner=False)
-def _load_data(_stamp):
+def _load_data(stamp):
     return database.get_all_startups(), database.get_all_job_matches()
 
 
 @st.cache_data(show_spinner=False)
-def _duplicate_employer_pairs(_stamp):
+def _duplicate_employer_pairs(stamp):
     return database.duplicate_employer_pairs()
 
 

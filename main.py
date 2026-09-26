@@ -554,29 +554,36 @@ def run() -> int:
         except Exception as e:
             _record(failures, "Google Sheets write", e)
 
-    # --- Duplicate employers: one posting arriving under two company names ---
-    # database.same_company_candidates has existed since the ATS-slug work but
-    # nothing ever called it, so it caught nothing: Vitalize/Vitalize Care sat on
-    # the board for three days after an application, and a cut list called the
-    # copy a pick. Reported, never merged — only a person can confirm that two
-    # names are one employer. A report failing must not fail the ingest run, so
-    # this warns rather than joining `failures`.
+    # --- Duplicates: one posting on the board twice ---
+    # Two shapes, one report: an employer renamed between feeds (Vitalize /
+    # Vitalize Care) and one employer's posting retitled by a job board (Revel's
+    # "Product Manager" and "Product Manager (Mid-Senior)"). Neither is
+    # catchable at ingest — the names differ, or the titles do, and the
+    # requisition ids come from different hosts. Reported, never merged. A
+    # report failing must not fail the ingest run, so this warns rather than
+    # joining `failures`.
     try:
         dupes = database.duplicate_employer_pairs()
     except Exception as e:
-        print(f"  Duplicate-employer report skipped: {e}")
+        print(f"  Duplicate report skipped: {e}")
         dupes = {"settled": [], "open": []}
 
     if dupes["settled"] or dupes["open"]:
-        print("\nPossible duplicate employers — same role title, two company names:")
-        for undecided, decided, signals in dupes["settled"]:
-            print(f"  #{undecided['id']} {undecided['company_name']} is already "
-                  f"{decided['status'].lower()} as #{decided['id']} "
-                  f"{decided['company_name']} — {signals} signals. "
-                  f"Remove the undecided copy.")
-        for a, b, signals in dupes["open"]:
-            print(f"  #{a['id']} {a['company_name']} / #{b['id']} {b['company_name']} "
-                  f"— both undecided, {signals} signals. Keep one spelling.")
+        print("\nPossible duplicates — one posting, two rows:")
+        for pair in dupes["settled"]:
+            cut, other = pair["cut"], pair["other"]
+            how = ("a second company name" if pair["kind"] == "rename"
+                   else "a retitled repost")
+            print(f"  #{cut['id']} {cut['company_name']} — {cut['role_title']} is "
+                  f"{other['status'].lower()} as #{other['id']} {other['company_name']} "
+                  f"({how}). Remove the undecided copy.")
+        for pair in dupes["open"]:
+            a, b = pair["a"], pair["b"]
+            how = ("two company names" if pair["kind"] == "rename"
+                   else "one employer, two titles")
+            print(f"  #{a['id']} {a['company_name']} \u2014 {a['role_title']} / "
+                  f"#{b['id']} {b['company_name']} \u2014 {b['role_title']} "
+                  f"({how}). Keep one.")
 
     if failures:
         print(f"\n{len(failures)} source(s) failed this run:")

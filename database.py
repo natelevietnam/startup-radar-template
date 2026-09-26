@@ -394,36 +394,119 @@ def same_company_candidates(min_signals: int = 3) -> list:
     return [(a, b, n) for _, _, a, b, n in scored]
 
 
+# canon_role peels a closed vocabulary of location and arrangement decorations
+# — "(Remote)", "(US)", "(Hybrid)" — and deliberately keeps seniority words,
+# because "Product Manager" and "Senior Product Manager" are different reqs and
+# collapsing them would hide real openings. That policy is right for titles and
+# wrong for one narrow case: a *bracketed band annotation* is not the employer's
+# title, it is a job board's seniority facet leaking into it. LinkedIn sent
+# "Revel — Product Manager (Mid-Senior)" one day after Jobright sent
+# "Revel — Product Manager", same city, one opening, and nothing linked them:
+# the unique index compares titles that differ, and same_company_candidates
+# skips pairs whose company names match, by design, because it hunts renames.
+#
+# Stripped only here, for matching. canon_role itself is untouched, so no
+# tombstone, decided key or ingest dedupe changes behaviour on account of it.
+_BAND_WORDS = (
+    r"mid|senior|sr|junior|jr|entry|associate|staff|principal|lead|level|levels|"
+    r"multiple|all\s+genders?|m\s*/\s*f\s*/\s*d|i{1,3}|iv"
+)
+_BAND_ANNOTATION = re.compile(
+    rf"[\(\[]\s*(?:{_BAND_WORDS})(?:[\s/&,+-]+(?:{_BAND_WORDS}))*\s*[\)\]]",
+    re.IGNORECASE,
+)
+
+
+def _band_stripped_role(role_title: str) -> str:
+    """canon_role, with a bracketed seniority-band annotation removed first."""
+    return canon_role(_BAND_ANNOTATION.sub(" ", role_title or ""))
+
+
+def retitled_repost_candidates() -> list:
+    """One employer's posting stored twice, the copies differing only by a band.
+
+    The same-employer counterpart to :func:`same_company_candidates`: same
+    canonical company, same city, titles that differ but agree once a bracketed
+    band annotation is removed. Pairs whose canonical titles already match are
+    left out — the unique index stops those at ingest.
+    """
+    conn = _connect()
+    try:
+        cols = ("id", "company_name", "role_title", "location", "url", "status")
+        rows = [dict(zip(cols, r)) for r in conn.execute(
+            "SELECT id, company_name, role_title, location, url, "
+            "       COALESCE(status,'') FROM job_matches")]
+    finally:
+        conn.close()
+    out, seen = [], set()
+    for i, a in enumerate(rows):
+        for b in rows[i + 1:]:
+            if canon_company(a["company_name"]) != canon_company(b["company_name"]):
+                continue
+            ra, rb = canon_role(a["role_title"]), canon_role(b["role_title"])
+            if not ra or ra == rb:          # identical titles are the index's job
+                continue
+            ba, bb = _band_stripped_role(a["role_title"]), _band_stripped_role(b["role_title"])
+            if not ba or ba != bb:
+                continue
+            ca = (a.get("location") or "").split(",")[0].strip().lower()
+            cb = (b.get("location") or "").split(",")[0].strip().lower()
+            if not ca or ca != cb:          # one city, or it is two openings
+                continue
+            key = tuple(sorted((a["id"], b["id"])))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((a, b))
+    return out
+
 # DECIDED_STATUSES rows are ones the user has ruled on. A pair where exactly one
 # side is decided is the case worth acting on: the decision was made about a
 # posting, and the same posting is sitting on the board again under another name.
 # Vitalize/Vitalize Care sat like that for three days after an application, and a
 # cut list called the copy a pick — which is what this partition exists to stop.
 def duplicate_employer_pairs(min_signals: int = 3) -> dict:
-    """`same_company_candidates` split by what a reader should do about it.
+    """Both duplicate detectors' output, split by what a reader should do.
 
-    Returns {"settled": [...], "open": [...]}, each a list of
-    (undecided_or_first, other, signals) tuples:
-
-    * settled — exactly one side carries a decision. The undecided row is first
-      in the tuple, and it is the copy to remove; the decided row is the record.
-    * open    — neither side is decided. One posting, two rows, no decision yet;
-      a person picks which spelling to keep.
+    Returns {"settled": [...], "open": [...]}, each a list of dicts:
+    ``{"cut", "other", "signals", "kind"}`` for settled — `cut` being the
+    undecided copy and `other` the row carrying the decision — and
+    ``{"a", "b", "signals", "kind"}`` for open, where neither side is decided
+    and a person picks which spelling to keep. `kind` is "rename" for two
+    company names (:func:`same_company_candidates`) or "retitle" for one
+    employer's posting stored twice (:func:`retitled_repost_candidates`).
 
     Pairs where both sides are already decided are dropped: the duplicate cost
     nothing and there is nothing to do about it.
+
+    One asymmetry, and it is deliberate. A settled *rename* is reported whatever
+    the decision — "you applied to this" and "you filed this Not Interested" are
+    both worth knowing, and both arrive from ingest. A settled *retitle* is
+    reported only when the decision was an application, because the other way
+    round is how the cut-list workflow ends: two copies go up, one is cut, and
+    the survivor is a deliberate keep. Reporting that pair would nag about a
+    choice the user just made.
     """
     settled, open_pairs = [], []
-    for a, b, n in same_company_candidates(min_signals):
+
+    def _file(a, b, signals, kind):
         da = (a.get("status") or "").strip() in DECIDED_STATUSES
-        db = (b.get("status") or "").strip() in DECIDED_STATUSES
-        if da and db:
-            continue
-        if da or db:
+        db_ = (b.get("status") or "").strip() in DECIDED_STATUSES
+        if da and db_:
+            return
+        if da or db_:
             undecided, decided = (b, a) if da else (a, b)
-            settled.append((undecided, decided, n))
+            if kind == "retitle" and (decided.get("status") or "").strip() != "Applied":
+                return
+            settled.append({"cut": undecided, "other": decided,
+                            "signals": signals, "kind": kind})
         else:
-            open_pairs.append((a, b, n))
+            open_pairs.append({"a": a, "b": b, "signals": signals, "kind": kind})
+
+    for a, b, n in same_company_candidates(min_signals):
+        _file(a, b, n, "rename")
+    for a, b in retitled_repost_candidates():
+        _file(a, b, None, "retitle")
     return {"settled": settled, "open": open_pairs}
 
 

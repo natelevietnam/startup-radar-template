@@ -570,33 +570,39 @@ elif page == "Job Matches":
             "each row. Your saved review is what Claude reads back."
         )
 
-    # Duplicate employers — one posting on the board twice under two company
-    # names. The pipeline cannot catch these: the names differ, the URLs differ,
-    # and the requisition ids come from different hosts. database's detector
-    # scores name/slug/title/city instead, and this is where its answer surfaces,
-    # next to the grid where a row can actually be deleted.
+    # Duplicates — one posting on the board twice, either under two company
+    # names or under two titles from one employer. The pipeline cannot catch
+    # either: the names differ, or the titles do, and the requisition ids come
+    # from different hosts. database's detectors score name/slug/title/city
+    # instead, and this is where their answer surfaces, next to the grid where
+    # a row can actually be deleted.
     try:
-        _dupes = _duplicate_employer_pairs(_db_stamp())
+        _dupes = database.duplicate_employer_pairs()
     except Exception as _dupe_err:                       # never break the page
         _dupes = {"settled": [], "open": []}
         st.caption(f"Duplicate check unavailable: {_dupe_err}")
 
     if _dupes["settled"] or _dupes["open"]:
         _lines = []
-        for _undecided, _decided, _n in _dupes["settled"]:
+        for _p in _dupes["settled"]:
+            _cut, _other = _p["cut"], _p["other"]
+            _how = ("under a second company name" if _p["kind"] == "rename"
+                    else "as a retitled repost")
             _lines.append(
-                f"- **#{_undecided['id']} {_undecided['company_name']}** — "
-                f"you already marked this role *{_decided['status']}* as "
-                f"#{_decided['id']} {_decided['company_name']} "
-                f"(“{_decided['role_title']}”). Delete the copy."
+                f"- **#{_cut['id']} {_cut['company_name']} — {_cut['role_title']}** "
+                f"is already *{_other['status']}* as #{_other['id']} "
+                f"{_other['company_name']} ({_how}). Delete the copy."
             )
-        for _a, _b, _n in _dupes["open"]:
+        for _p in _dupes["open"]:
+            _a, _b = _p["a"], _p["b"]
+            _how = ("same role, two company names" if _p["kind"] == "rename"
+                    else "one employer, two titles")
             _lines.append(
-                f"- **#{_a['id']} {_a['company_name']}** and "
-                f"**#{_b['id']} {_b['company_name']}** — same role title and city, "
-                f"both undecided. Keep one."
+                f"- **#{_a['id']} {_a['company_name']} — {_a['role_title']}** and "
+                f"**#{_b['id']} {_b['company_name']} — {_b['role_title']}** "
+                f"— {_how}, both undecided. Keep one."
             )
-        st.warning("**Same role, two company names**\n\n" + "\n".join(_lines))
+        st.warning("**One posting, two rows**\n\n" + "\n".join(_lines))
 
     if st.button("+ Add Role", key="add_role_btn"):
         st.session_state["show_add_role"] = not st.session_state.get("show_add_role", False)

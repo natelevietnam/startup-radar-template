@@ -671,6 +671,24 @@ _COMPANY_REBRAND = {
     # to the name it launched under in 2018. abnormal.ai.
     "abnormal security": "abnormal ai",
     "abnormal": "abnormal ai",
+
+    # C3.ai, whose legal name and brand ARE the domain form. _COMPANY_TLD strips
+    # the tail after a dot, so "C3.ai" normalises to "c3" while the spaced form
+    # "C3 AI" stays "c3 ai" — two keys for one employer, and the one case where
+    # that rule works against itself.
+    #
+    # The cost was concrete: C3's Greenhouse posting on 2026-09-03 stated
+    # "candidates must be authorized to work in the United States without the
+    # need for current or future company sponsorship", was read as a refusal and
+    # filed Not Interested. On 2026-09-28 LinkedIn served the same team's Senior
+    # PM req spelled "C3 AI", which matched neither the decided key nor the
+    # refusal, and it landed on the board carrying the identical sentence.
+    #
+    # Folded toward "c3" because that is what the domain form already produces.
+    # #27 verified that "C3 AI" and "C3" stay separate under the general rule,
+    # which is right for Scale AI vs Scale — but C3 is not two companies, and an
+    # alias is the only thing that can say so.
+    "c3 ai": "c3",
 }
 
 

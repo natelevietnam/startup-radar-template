@@ -889,6 +889,27 @@ def requisition_id(url: str) -> str:
     return m.group(1) if m else ""
 
 
+# How much a reader needs to hear about each decided status, when more than one
+# of a company's decided rows matches the same undecided posting. "You applied to
+# this" outranks "you rejected a sibling of this": an application is a commitment
+# with a process attached, while a rejection is a judgement that the new posting
+# may well overturn.
+#
+# Jerry is the case. Its "Growth (10-to-100)" charter had TWO decided rows — 1630
+# Applied (the real one, with an activity record dated 2026-09-18) and 1603 Not
+# Interested (a stale cross-source duplicate). When "Product Manager, Growth
+# (10-to-100)" arrived on 2026-09-29, the specialization matched both, and this
+# function returned whichever came first out of the database — "Not Interested".
+# The badge then told the reader they had rejected the sibling role, burying the
+# fact that they had applied to it.
+_STATUS_URGENCY = {
+    "applied": 3,          # a live process — always the thing worth saying
+    "interested": 2,
+    "wishlist": 1,
+    "not interested": 0,
+}
+
+
 def decided_duplicate(role_title: str, url: str, decided_rows: list) -> Optional[dict]:
     """Is this undecided posting the same job as one already decided about?
 
@@ -896,38 +917,55 @@ def decided_duplicate(role_title: str, url: str, decided_rows: list) -> Optional
     as mappings with `role_title`, `url` and `status`. Returns None, or
     ``{"status", "role", "reason", "certain"}`` — see the note above for what
     the two confidence levels mean and how callers must treat them.
+
+    When several decided rows match, the most consequential match is returned
+    rather than the first one encountered: a certain match beats an uncertain
+    one, and among equally certain matches a live application beats a rejection.
+    Row order out of SQLite is not a ranking and must not decide what a reader
+    is told.
     """
+    best = None
+    best_key = None
     for d in decided_rows:
         d_role, d_url = d["role_title"], d["url"]
         verdict = {"status": d["status"], "role": d_role}
+        found = None
 
         mine, theirs = canon_url(url), canon_url(d_url)
         if mine and mine == theirs:
-            return {**verdict, "reason": "same posting URL", "certain": True}
+            found = {**verdict, "reason": "same posting URL", "certain": True}
 
         host, d_host = _ats_host(url), _ats_host(d_url)
         req, d_req = requisition_id(url), requisition_id(d_url)
         same_host = bool(host) and host == d_host
-        if same_host and req and d_req:
+        if found is None and same_host and req and d_req:
             if req != d_req:
                 continue                       # provably two different reqs
-            return {**verdict, "reason": "same requisition id", "certain": True}
+            found = {**verdict, "reason": "same requisition id", "certain": True}
 
-        spec, d_spec = _title_specialization(role_title), _title_specialization(d_role)
-        if spec and d_spec:
-            if difflib.SequenceMatcher(None, spec, d_spec).ratio() >= 0.88:
-                return {**verdict, "reason": f"same specialization ({spec})",
-                        "certain": False}
-        elif not spec and not d_spec and not same_host:
-            # Two bare "Product Manager" titles reaching us from different
-            # aggregators. Often one job; at a large employer, often not.
-            if difflib.SequenceMatcher(
-                None, _fold_title(role_title), _fold_title(d_role)
-            ).ratio() >= 0.85:
-                return {**verdict,
-                        "reason": f"untitled re-list via {host or 'unknown source'}",
-                        "certain": False}
-    return None
+        if found is None:
+            spec, d_spec = _title_specialization(role_title), _title_specialization(d_role)
+            if spec and d_spec:
+                if difflib.SequenceMatcher(None, spec, d_spec).ratio() >= 0.88:
+                    found = {**verdict, "reason": f"same specialization ({spec})",
+                             "certain": False}
+            elif not spec and not d_spec and not same_host:
+                # Two bare "Product Manager" titles reaching us from different
+                # aggregators. Often one job; at a large employer, often not.
+                if difflib.SequenceMatcher(
+                    None, _fold_title(role_title), _fold_title(d_role)
+                ).ratio() >= 0.85:
+                    found = {**verdict,
+                             "reason": f"untitled re-list via {host or 'unknown source'}",
+                             "certain": False}
+
+        if found is None:
+            continue
+        key = (found["certain"],
+               _STATUS_URGENCY.get((found["status"] or "").strip().lower(), 0))
+        if best_key is None or key > best_key:
+            best, best_key = found, key
+    return best
 
 
 def get_decided_rows_by_company() -> dict:

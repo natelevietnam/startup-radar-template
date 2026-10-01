@@ -66,6 +66,49 @@ _ADDED_COLUMNS = {
         # 0-based rank from targets.industry_priority, or NULL when nothing
         # matched. Written by set_priorities.py; see JobFilter.industry_rank.
         ("industry_rank", "INTEGER"),
+
+        # --- ATS board polling (sources/jobs/) -------------------------------
+        # Rows discovered by polling a company's own board carry the provider
+        # and that board's own id for the posting. Both are derivable from the
+        # URL via _ats_host/requisition_id, but storing them is what lets the
+        # partial unique index below key a posting by its board identity rather
+        # than by (company, title) — the only identity that survives a company
+        # re-titling a req. NULL on every row that came from a feed.
+        ("provider", "TEXT"),
+        ("provider_job_id", "TEXT"),
+        # The board's own publish date, which is NOT date_found: date_found is
+        # when this pipeline first saw the row, and a board can serve a posting
+        # that has been open for months. Recency scoring needs the former.
+        ("posted_at", "TEXT"),
+        # Last run that saw this posting still on its board. Lets "is it still
+        # open" be answered without a fetch, and gives prune_dead_jobs a cheap
+        # pre-filter. Closed rows are still deleted and tombstoned, not flagged.
+        ("last_seen_at", "TEXT"),
+        # The posting body. company_description is a metadata blurb the source
+        # adapters assemble (industry, level, comp), not the posting text, so it
+        # cannot answer "does this posting mention evals or forward deployment".
+        # Scoring description signals needs the real thing.
+        ("description_text", "TEXT DEFAULT ''"),
+        # Parsed compensation. Boards that publish a range give it structurally;
+        # feeds bury it in prose or omit it. comp_known separates "no range
+        # published" from "range published and it is low", which score
+        # differently: most startups omit it and must not be penalised for that.
+        ("comp_min", "INTEGER"),
+        ("comp_max", "INTEGER"),
+        ("comp_known", "INTEGER DEFAULT 0"),
+
+        # --- forward-deployed lens (job_matching.* in config.yaml) -----------
+        # A SECOND opinion, never a gate. targets.* still decides what enters
+        # the board at all; these three only rank what is already there. Tier 1
+        # is the hypothesis, tier 3 is foot-in-the-door and surfaces only for a
+        # company whose dossier scores >= 75 with gates.status == "ready".
+        # Tier 2 is deliberately not implemented. NULL means unscored.
+        ("lens_tier", "INTEGER"),
+        ("lens_score", "INTEGER"),
+        # JSON array of human-readable strings. The reasons are the point: a
+        # number alone is not auditable, and this lens is a hypothesis under
+        # test rather than a settled rule.
+        ("lens_reasons", "TEXT DEFAULT ''"),
     ],
     "tracker_status": [
         # What comp was actually discussed, and at which stage. The tracker
@@ -92,6 +135,28 @@ def _apply_column_migrations(conn) -> None:
         for name, decl in cols:
             if name not in have:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+
+
+# Indexes over columns from _ADDED_COLUMNS, which therefore cannot live in the
+# CREATE TABLE script: on a database that already exists, that script runs
+# before the ALTER TABLEs and the column is not there yet. ("no such column:
+# provider", which is exactly how this was found.)
+_ADDED_INDEXES = (
+    # A posting's identity on its own board. Partial, because every row that
+    # came from a feed has NULL for both halves and SQLite treats NULLs as
+    # distinct — without the WHERE clause this would still work, but it would
+    # index a thousand NULL pairs to no purpose. This is what makes board
+    # polling idempotent: a re-run updates the same row even when the employer
+    # has re-titled the req, which idx_jobs_company_role cannot do.
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_provider_jobid
+           ON job_matches(provider, provider_job_id)
+           WHERE provider IS NOT NULL AND provider_job_id IS NOT NULL""",
+)
+
+
+def _apply_index_migrations(conn) -> None:
+    for stmt in _ADDED_INDEXES:
+        conn.execute(stmt)
 
 
 def init_db() -> None:
@@ -141,6 +206,23 @@ def init_db() -> None:
                 role_title TEXT DEFAULT '',
                 deleted_at TEXT DEFAULT (datetime('now')),
                 PRIMARY KEY (company_name COLLATE NOCASE, role_title COLLATE NOCASE)
+            );
+
+            -- Which ATS board each tracked company posts on, so a company is
+            -- resolved to a board once rather than on every run. A row with a
+            -- NULL provider is a company we FAILED to resolve: kept on purpose,
+            -- so a failure is remembered and retried on a schedule instead of
+            -- re-attempted every single run. Keyed on the canonical company
+            -- name, which is the join the rest of this module already uses.
+            CREATE TABLE IF NOT EXISTS ats_boards (
+                canon TEXT PRIMARY KEY,
+                company_name TEXT DEFAULT '',
+                provider TEXT,
+                token TEXT,
+                resolved_at TEXT,
+                last_attempt_at TEXT,
+                attempts INTEGER DEFAULT 0,
+                last_error TEXT DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS connections (
@@ -197,6 +279,7 @@ def init_db() -> None:
             );
         """)
         _apply_column_migrations(conn)
+        _apply_index_migrations(conn)
         conn.commit()
     finally:
         conn.close()

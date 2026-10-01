@@ -1,0 +1,12 @@
+{
+  "_source": "synthetic — the title class blocked by the ingest gate before tier 1 was admitted",
+  "company_name": "Example AI",
+  "role_title": "Deployment Strategist",
+  "location": "San Francisco, CA",
+  "description_text": "Work as a deployment strategist embedded with enterprise customers, owning customer implementation, solution design and guardrails for agent rollouts.",
+  "comp_min": 180000,
+  "comp_max": 230000,
+  "comp_known": 1,
+  "sponsorship": "offered",
+  "posted_at": "2026-10-01"
+}

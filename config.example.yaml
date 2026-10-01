@@ -123,6 +123,161 @@ targets:
   large_seed_threshold_musd: 50
 
 # ---------------------------------------------------------------------------
+# Forward-deployed lens (added 2026-10-01)
+# ---------------------------------------------------------------------------
+# A SECOND OPINION, NOT A GATE. `targets.*` above still decides what enters the
+# board; everything here only ranks what is already on it, and writes
+# job_matches.lens_tier / lens_score / lens_reasons. Nothing here can cut a row.
+#
+# The hypothesis, from a conversation with an operator in this niche: the roles
+# that convert are the ones sitting between the customer and the engineering
+# team at AI companies, and that family of work is sold under a dozen different
+# titles. A keyword list beats a job-board search precisely because the title is
+# unreliable — which is also why `description_signals` exists below, to catch a
+# posting whose title hides what the job actually is.
+#
+# Deliberately NOT duplicated here, because `targets.*` already owns them and a
+# second copy would drift: years of experience (soft 5 / max 7 above — the
+# spec's 6 was rejected), locations, company exclusions, title and seniority
+# exclusions, and visa stance. Visa in particular stays with
+# enrich_sponsorship.py, whose classifier handles the cases a keyword list gets
+# wrong — "visa sponsorship" is a substring of "no visa sponsorship".
+job_matching:
+  enabled: true
+
+  title_tiers:
+    # Tier 1 is the hypothesis, and these titles ARE admitted at ingest: a
+    # title matching any of them passes the role gate the same way
+    # `targets.roles` does. Without that, half of this list never reaches the
+    # board at all — six of the twelve do not contain the literal string
+    # "product manager", including "forward deployed PM" (just the
+    # abbreviation) and "deployment strategist" (Palantir's original name for
+    # the role), so the lens would have been scoring an empty set.
+    #
+    # Admitting these does NOT re-open the shapes the 2026-09-09 narrowing
+    # dropped: every exclusion in `targets` still applies on top, so a
+    # "Founding AI Product Manager" or a "Principal Solutions Product Manager"
+    # is still cut.
+    tier_1:
+      - "forward deployed product manager"
+      - "forward deployed pm"
+      - "deployment strategist"
+      - "agent operator"
+      - "agent operations"
+      - "ai strategist"
+      - "applied ai product manager"
+      - "ai product manager"
+      - "strategic product manager"
+      - "customer impact"
+      - "solutions product manager"
+      - "field product manager"
+
+    # Tier 2 from the spec is deliberately omitted, not forgotten. It was
+    # mostly engineer titles — solutions engineer, forward deployed engineer,
+    # applied AI engineer — which `targets.seniority_exclusions` already blocks
+    # ("software engineer", "founding engineer") and which the ingest role gate
+    # would reject anyway. Admitting them would mean reversing both. Decided
+    # 2026-10-01: skip entirely.
+
+    # Tier 3 is foot-in-the-door work, and it is scored but NOT admitted at
+    # ingest (decided 2026-10-01). These titles contain no PM string, so in
+    # practice they do not reach the board today and this list is inert —
+    # recorded so the taxonomy is complete and so turning it on is one flag
+    # rather than a rewrite. When it is turned on, `tier_3_requires` below is
+    # the condition: the company has to already be a strong, unblocked fit.
+    tier_3:
+      - "chief of staff"
+      - "founder's associate"
+      - "founders associate"
+      - "business operations"
+      - "strategy and operations"
+      - "special projects"
+
+    # Flip to true to admit tier-3 titles at ingest as well.
+    tier_3_admitted_at_ingest: false
+
+  # What "extremely strong company fit" means for tier 3, in the only terms the
+  # repo can actually evaluate: the company's cached dossier. 75 is the same bar
+  # as the auto-refresh threshold in generate_fit_artifact.py, and "ready" means
+  # no unresolved sponsorship, comp or location gate. A company with no dossier
+  # fails this on purpose — strength cannot be asserted about a company nobody
+  # has researched.
+  tier_3_requires:
+    min_company_score: 75
+    gate_status: "ready"
+
+  # Points per tier. Tier 2 has no entry because it is not implemented.
+  tier_points:
+    tier_1: 40
+    tier_3: 10
+
+  # Description signals: how a mislabelled posting gets caught. Scored on the
+  # posting body (job_matches.description_text), not the title.
+  description_signals:
+    strong:
+      - "forward deployed"
+      - "customer implementation"
+      - "post-sales"
+      - "evaluation period"
+      - "proof of concept"
+      - "land and expand"
+      - "deployment"
+      - "onboarding customers"
+      - "solution design"
+      - "enterprise customers"
+      - "evals"
+      - "eval harness"
+      - "guardrails"
+      - "agent"
+      - "llm"
+      - "rlhf"
+    weak:
+      - "playbook"
+      - "stakeholder"
+      - "discovery"
+      - "roadmap"
+    strong_points: 3
+    strong_cap: 25
+    weak_points: 1
+    weak_cap: 5
+
+  compensation:
+    # The hard deal-breaker, unchanged. Currently also hardcoded as COMP_FLOOR
+    # in generate_fit_artifact.py; that file should read this key instead, which
+    # is a step-4 change rather than a config one.
+    floor_usd: 150000
+    # Above this, the posting is paying what the target band actually looks
+    # like. Scored as a bonus — it is NOT a second deal-breaker. The spec
+    # proposed 170000 as the floor; that was rejected on 2026-10-01 because
+    # every dossier gate and the whole fit history is denominated at 150000.
+    target_usd: 170000
+    points_at_target: 10
+    points_above_floor: 7
+    points_if_unknown: 5      # most startups publish nothing; do not punish it
+    points_below_floor: 0     # and say so in the reasons
+
+  location_points:
+    bay_area: 15
+    remote_us: 10
+
+  # Positive sponsorship signal only. A negative one never subtracts — an
+  # explicit refusal is already a hard cut in enrich_sponsorship.py, so a row
+  # that reaches scoring has not refused.
+  visa_points_positive: 5
+
+  recency:
+    within_days: 14
+    points: 5
+
+  # Tier 1 + signals + location + comp + visa + recency tops out at 105, so the
+  # total is clamped. Kept rather than rebalanced: the component weights come
+  # from the spec and are easier to reason about than rescaled ones.
+  score_cap: 100
+
+  # Minimum score for a posting to appear in the daily digest.
+  digest_min_score: 60
+
+# ---------------------------------------------------------------------------
 # Where to pull signal from
 # ---------------------------------------------------------------------------
 sources:

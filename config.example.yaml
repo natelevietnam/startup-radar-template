@@ -277,6 +277,30 @@ job_matching:
   # Minimum score for a posting to appear in the daily digest.
   digest_min_score: 60
 
+  # Board-polled rows are held behind this score, so polling a company's whole
+  # board cannot flood the triage queue. Set deliberately equal to
+  # digest_min_score, with a consequence worth understanding:
+  #
+  # Without a tier-1 title match (40 points) a posting's ceiling is roughly 35 —
+  # signals 30, Bay Area 15, comp 10, recency 5, minus whatever it lacks. So at
+  # 60 this channel admits TIER-1 TITLES ONLY. Measured against the first two
+  # resolved boards: 60 postings polled, 3 survived the role gate, and all three
+  # scored 27-32 as plain "Product Manager" titles, so none were admitted.
+  #
+  # That is the intended shape — the feeds already cover plain PM titles, and
+  # board polling exists to catch the tier-1 titles they miss. Lower this to
+  # about 30 to also admit plain-PM roles at companies already tracked, at the
+  # cost of a larger queue.
+  board_ingest_min_score: 60
+
+  # How many unresolved companies a single run will attempt. The watchlist is
+  # 460+ companies and daily_run.py has a 15-minute total timeout, so a first
+  # full pass has to be incremental rather than one long sweep. At worst three
+  # requests per company at one per second, this is about two minutes. Resolved
+  # and failed companies are both skipped for BOARD_TTL_DAYS, so successive runs
+  # work through new ground instead of re-asking.
+  max_resolutions_per_run: 35
+
 # ---------------------------------------------------------------------------
 # Where to pull signal from
 # ---------------------------------------------------------------------------

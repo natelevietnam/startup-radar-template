@@ -650,6 +650,11 @@ elif page == "Job Matches":
         "Date found (newest first)": None,
         "Priority: High → Low": False,
         "Priority: Low → High": True,
+        # The forward-deployed lens, which ranks on the posting rather than on
+        # the company dossier Priority comes from. Kept as a separate sort
+        # rather than folded into Priority, because the two answer different
+        # questions and disagreeing is informative.
+        "Lens score: high → low": "lens",
     }
 
     # Per-column filters. st.data_editor has no column-header filter UI and
@@ -667,7 +672,8 @@ elif page == "Job Matches":
     with st.expander("Filter by column", expanded=bool(
             st.session_state.get("job_priority") or st.session_state.get("f_company")
             or st.session_state.get("f_role") or st.session_state.get("f_loc")
-            or st.session_state.get("f_source") or st.session_state.get("f_found"))):
+            or st.session_state.get("f_source") or st.session_state.get("f_found")
+            or st.session_state.get("f_lens_min") or st.session_state.get("f_lens_tier"))):
         _c1, _c2, _c3 = st.columns(3)
         with _c1:
             f_company = st.multiselect(
@@ -702,6 +708,16 @@ elif page == "Job Matches":
                     _d_hi = date.fromisoformat(_found_seen.max())
                 except ValueError:
                     _d_lo = _d_hi = None
+            f_lens_min = st.number_input(
+                "Min lens score", min_value=0, max_value=100, value=0, step=5,
+                key="f_lens_min",
+                help="Forward-deployed lens. 0 shows everything, including rows "
+                     "score_lens.py has not reached. A posting cannot pass 40 "
+                     "without a tier-1 title, so 60 is effectively tier-1 only.")
+            f_lens_tier = st.multiselect(
+                "Lens tier", ["T1", "T3", "Unscored"], key="f_lens_tier",
+                help="T1 is the forward-deployed hypothesis; T3 is a "
+                     "foot-in-the-door role at a company that clears the bar.")
             f_found = st.date_input(
                 "Date found", value=(), key="f_found", format="YYYY-MM-DD",
                 min_value=_d_lo, max_value=_d_hi,
@@ -710,7 +726,7 @@ elif page == "Job Matches":
             ) if _d_lo is not None else ()
         if st.button("Clear column filters", key="clear_job_filters"):
             for _k in ("f_company", "f_role", "f_loc", "job_priority", "f_source",
-                       "f_industry", "f_found"):
+                       "f_industry", "f_found", "f_lens_min", "f_lens_tier"):
                 st.session_state.pop(_k, None)
             st.rerun()
 
@@ -749,6 +765,16 @@ elif page == "Job Matches":
             (_found_col >= _picked[0].isoformat())
             & (_found_col <= _picked[-1].isoformat())]
 
+    if f_lens_min:
+        filtered_jobs = filtered_jobs[
+            filtered_jobs["Lens"].fillna(-1) >= f_lens_min]
+    if f_lens_tier:
+        _t = filtered_jobs["Tier"].fillna("")
+        _mask = _t.isin([x for x in f_lens_tier if x != "Unscored"])
+        if "Unscored" in f_lens_tier:
+            _mask = _mask | (_t == "")
+        filtered_jobs = filtered_jobs[_mask]
+
     if job_priority:
         _p = filtered_jobs["Priority"].fillna("").str.strip()
         _want = [x for x in job_priority if x != "Unranked"]
@@ -760,6 +786,10 @@ elif page == "Job Matches":
     st.caption(f"{len(filtered_jobs)} of {len(df_jobs)} rows match the current filters.")
 
     _reverse = _SORTS[job_sort]
+    if _reverse == "lens":
+        filtered_jobs = filtered_jobs.sort_values(
+            ["Lens", "Date Found"], ascending=[False, False], na_position="last")
+        _reverse = None
     if _reverse is not None:
         # Unranked rows sort last either way — an absent priority is not a low
         # one, and floating them to the top of "Low → High" would bury the
@@ -838,6 +868,15 @@ elif page == "Job Matches":
         "Priority": st.column_config.SelectboxColumn(
             "Priority", options=PRIORITY_OPTIONS, width="small",
             help="Ranking only \u2014 a Low row stays in the queue, it just sorts down."),
+        "Lens": st.column_config.NumberColumn(
+            "Lens", width="small", disabled=True, format="%d",
+            help="Forward-deployed lens score, 0-100, from job_matching in "
+                 "config.yaml. Blank means score_lens.py has not scored it yet. "
+                 "A second opinion on the posting — Priority ranks the company."),
+        "Tier": st.column_config.TextColumn(
+            "Tier", width="small", disabled=True,
+            help="T1 = forward-deployed hypothesis, T3 = foot-in-the-door at a "
+                 "company scoring 75+ with a clear gate. Blank = neither."),
         "Link": st.column_config.LinkColumn("Link", display_text="Apply"),
         "Connections": st.column_config.TextColumn("Connections", width="medium"),
         "\U0001f195": st.column_config.TextColumn("\U0001f195", width="small", help="Found in the last 30 days"),

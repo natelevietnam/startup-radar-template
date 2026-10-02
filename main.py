@@ -510,6 +510,72 @@ def run() -> int:
         except Exception as e:
             _record(failures, "WaaS Inbound source", e)
 
+    # --- Optional: ATS board polling (tracked companies -> job_matches) ---
+    # Runs after company discovery because it depends on the company list, per
+    # the spec. Resolution and polling are both capped and both cached, so this
+    # block has a bounded cost even on a 460-company watchlist.
+    jm_cfg = cfg.get("job_matching") or {}
+    if jm_cfg.get("enabled"):
+        print("\n[ATS boards] Resolving and polling...")
+        try:
+            import job_lens
+            import score_lens
+            from filters import JobFilter
+            from sources.jobs import resolve as board_resolve
+
+            flt = JobFilter(cfg)
+            dossiers = score_lens._dossiers()
+            rank = {k: d.get("score") for k, d in dossiers.items()
+                    if isinstance(d.get("score"), (int, float))}
+
+            cap = int(jm_cfg.get("max_resolutions_per_run", 35))
+            attempts = board_resolve.resolve_pending(limit=cap, rank=rank)
+            ok = [a for a in attempts if a.get("ok")]
+            print(f"  resolved {len(ok)}/{len(attempts)} attempted "
+                  f"(cap {cap}) · {len(database.resolved_boards())} boards known")
+
+            jobs = board_resolve.poll_resolved()
+            print(f"  {len(jobs)} posting(s) across all resolved boards")
+
+            # The same hard gates every feed goes through. A board hands over
+            # everything a company has open, most of which is not a PM role.
+            _n = len(jobs)
+            jobs = [j for j in jobs if not flt.company_excluded(j.get("company_name", ""))]
+            jobs = [j for j in jobs if not flt.seniority_excluded(
+                j.get("role_title", ""), j.get("company_description", ""))]
+            jobs = [j for j in jobs if not flt.location_excluded(j.get("location", ""))]
+            jobs = [j for j in jobs if flt.role_matches(j.get("role_title", ""))]
+            if len(jobs) != _n:
+                print(f"  {len(jobs)} after the standard filter chain ({_n - len(jobs)} dropped)")
+
+            # And then the lens threshold, which is what keeps polling a whole
+            # board from flooding triage. Scored here rather than after insert so
+            # a below-threshold posting is never written at all.
+            floor = int(jm_cfg.get("board_ingest_min_score", 60))
+            locs = (cfg.get("targets") or {}).get("locations") or []
+            kept = []
+            for j in jobs:
+                verdict = job_lens.score_posting(
+                    j, jm_cfg,
+                    company=dossiers.get(database.canon_company(j["company_name"])),
+                    target_locations=locs)
+                if verdict.score >= floor:
+                    j.update(verdict.as_row())
+                    kept.append(j)
+            print(f"  {len(kept)} at or above the lens floor of {floor} "
+                  f"({len(jobs) - len(kept)} held back)")
+
+            if kept:
+                added = database.insert_job_matches(kept)
+                print(f"  Added {added} new job(s) to SQLite")
+                for j in kept[:10]:
+                    print(f"    {j['company_name']} | {j['role_title'][:46]} "
+                          f"| lens {j['lens_score']}")
+            else:
+                print("  No new jobs to add")
+        except Exception as e:
+            _record(failures, "ATS board polling", e)
+
     print(f"\nTotal extracted: {len(all_startups)}")
 
     # --- Filter ---

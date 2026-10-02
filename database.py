@@ -1416,7 +1416,7 @@ def get_all_job_matches() -> pd.DataFrame:
         df = pd.read_sql_query(
             """SELECT company_name, company_description, role_title,
                       location, url, priority, source, industry_rank,
-                      status, date_found, notes
+                      status, date_found, notes, lens_score, lens_tier
                FROM job_matches ORDER BY date_found DESC, id DESC""",
             conn,
         )
@@ -1425,6 +1425,7 @@ def get_all_job_matches() -> pd.DataFrame:
     df.columns = [
         "Company", "Company Description", "Role", "Location", "Link",
         "Priority", "Source", "Industry", "Status", "Date Found", "Notes",
+        "Lens", "Tier",
     ]
     df["Status"] = df["Status"].fillna("")
     df["Notes"] = df["Notes"].fillna("")
@@ -1434,6 +1435,11 @@ def get_all_job_matches() -> pd.DataFrame:
     # which reads as "no preference expressed", not "worst".
     _labels = industry_labels()
     df["Industry"] = df["Industry"].map(lambda r: _labels.get(r, "") if pd.notna(r) else "")
+    # Lens columns read blank rather than 0 when unscored, for the same reason
+    # Industry does: a row score_lens.py has not reached yet has no opinion
+    # attached, which is not the same as scoring nothing.
+    df["Lens"] = df["Lens"].map(lambda v: int(v) if pd.notna(v) else None)
+    df["Tier"] = df["Tier"].map(lambda v: f"T{int(v)}" if pd.notna(v) else "")
     return df
 
 

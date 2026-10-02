@@ -73,19 +73,52 @@ def test_tier_1_titles_are_tier_1(name):
     assert r.score >= CFG["tier_points"]["tier_1"]
 
 
-def test_deployment_strategist_is_the_title_the_ingest_gate_used_to_block():
+def test_tier_1_titles_without_a_pm_substring_now_reach_the_board():
     """The whole reason tier 1 is admitted at ingest.
 
-    "Deployment Strategist" contains no "product manager" substring, so under
-    targets.roles alone it never reached the board and the lens could not have
-    scored it.
+    Six of the twelve tier-1 titles contain no "product manager" substring, so
+    under targets.roles alone they never reached job_matches and the lens scored
+    an empty set for half its own taxonomy. The config documented them as
+    admitted for a day before filters.py actually read the key; this test is
+    what makes that claim true rather than aspirational.
     """
     import filters
     from config_loader import load_config
 
-    assert not filters.JobFilter(load_config()).role_matches("Deployment Strategist")
-    r = score("deployment_strategist")
-    assert r.tier == 1
+    flt = filters.JobFilter(load_config())
+    for title in ("Forward Deployed PM", "Deployment Strategist", "Agent Operator",
+                  "Agent Operations", "AI Strategist", "Customer Impact"):
+        assert flt.role_matches(title), title
+        assert not any(r in title.lower() for r in flt.roles), \
+            f"{title} should be admitted by the lens list, not by targets.roles"
+
+    assert score("deployment_strategist").tier == 1
+
+
+def test_tier_1_admission_does_not_reopen_the_excluded_shapes():
+    """Widening the positive match must not undo the 2026-09-09 narrowing."""
+    import filters
+    from config_loader import load_config
+
+    flt = filters.JobFilter(load_config())
+    for title in ("Founding Deployment Strategist", "Principal Forward Deployed PM",
+                  "Director, AI Strategist", "Staff Agent Operator",
+                  "Group Product Manager", "Lead Product Manager"):
+        assert not flt.role_matches(title), title
+
+
+def test_tier_3_is_not_admitted_at_ingest_while_its_flag_is_false():
+    import filters
+    import yaml
+    from config_loader import load_config
+
+    cfg = load_config()
+    tiers = cfg["job_matching"]["title_tiers"]
+    if tiers.get("tier_3_admitted_at_ingest"):
+        pytest.skip("tier 3 has been turned on at ingest")
+    flt = filters.JobFilter(cfg)
+    for title in tiers["tier_3"]:
+        assert not flt.role_matches(title), title
 
 
 def test_exa_fdpm_reads_its_signals_and_names_them():

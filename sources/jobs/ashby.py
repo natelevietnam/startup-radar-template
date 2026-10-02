@@ -2,9 +2,10 @@
 
     https://api.ashbyhq.com/posting-api/job-board/{token}?includeCompensation=true
 
-Token is the slug in jobs.ashbyhq.com/{token} — case-sensitive, and often not
-lowercase ("Jerry.ai", "AfterQuery"), which is why resolution stores it verbatim
-rather than normalising it.
+Token is the slug in jobs.ashbyhq.com/{token}. Boards are often spelled with
+capitals ("Jerry.ai", "AfterQuery"), but the API resolves them case-insensitively
+— verified against both spellings of each — so the lowercased slug that
+database.company_slug() already returns can be used directly.
 
 Ashby is the best of the three for this purpose: it publishes structured
 compensation, a plain-text description, and an isListed flag that says whether

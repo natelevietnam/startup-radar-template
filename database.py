@@ -3,7 +3,7 @@
 import difflib
 import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import (parse_qs, parse_qsl, urlencode, urlparse,
                           urlsplit, urlunsplit)
@@ -283,6 +283,147 @@ def init_db() -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+# ---------- ATS board resolution cache ----------
+
+# How long a resolution stands before it is checked again. The spec says not to
+# re-resolve more than weekly; a board token changes about never, so this is
+# mostly about eventually retrying the ones that failed.
+BOARD_TTL_DAYS = 7
+
+
+def get_board(canon_name: str) -> Optional[dict]:
+    """The cached board for a canonical company name, resolved or failed."""
+    conn = _connect()
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM ats_boards WHERE canon = ?", (canon_name,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def upsert_board(canon_name: str, company_name: str, provider: Optional[str],
+                 token: Optional[str], error: str = "") -> None:
+    """Record a resolution attempt, successful or not.
+
+    A failure is stored rather than dropped, which is the whole point of the
+    table: without a row, every run would re-attempt every unresolvable company
+    and spend its entire request budget on the same dead ends. `attempts`
+    accumulates so a company that has failed repeatedly can be backed off or
+    reported on later.
+    """
+    conn = _connect()
+    try:
+        conn.execute(
+            """INSERT INTO ats_boards
+                   (canon, company_name, provider, token, resolved_at,
+                    last_attempt_at, attempts, last_error)
+               VALUES (?, ?, ?, ?, ?, datetime('now'), 1, ?)
+               ON CONFLICT(canon) DO UPDATE SET
+                   company_name    = excluded.company_name,
+                   provider        = excluded.provider,
+                   token           = excluded.token,
+                   resolved_at     = COALESCE(excluded.resolved_at, ats_boards.resolved_at),
+                   last_attempt_at = datetime('now'),
+                   attempts        = ats_boards.attempts + 1,
+                   last_error      = excluded.last_error""",
+            (canon_name, company_name, provider, token,
+             datetime.now().strftime("%Y-%m-%d %H:%M:%S") if provider else None,
+             error[:300]))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def resolved_boards() -> list[dict]:
+    """Every company with a usable board, for the polling pass."""
+    conn = _connect()
+    try:
+        conn.row_factory = sqlite3.Row
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM ats_boards WHERE provider IS NOT NULL AND "
+            "TRIM(COALESCE(token,'')) <> '' ORDER BY company_name")]
+    finally:
+        conn.close()
+
+
+def companies_needing_resolution(limit: int = 35) -> list[dict]:
+    """Tracked companies to attempt next, most promising first.
+
+    Tracked means: on the startups watchlist, or already carrying a job_matches
+    row — a company that has posted a role we kept is at least as interesting as
+    one from a funding feed.
+
+    Ordered by the best evidence available that the company is worth the request
+    budget: how recently it has had a posting on the board, then name. The caller
+    re-ranks by dossier score, which lives in a JSON file this module does not
+    read.
+
+    Companies whose last attempt is within BOARD_TTL_DAYS are skipped, resolved
+    or not, so a run spends its budget on new ground rather than re-asking.
+    """
+    conn = _connect()
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            WITH tracked AS (
+                SELECT company_name, website, NULL AS last_seen FROM startups
+                UNION ALL
+                SELECT company_name, NULL, MAX(date_found) FROM job_matches
+                 GROUP BY company_name
+            )
+            SELECT company_name,
+                   MAX(COALESCE(website, ''))   AS website,
+                   MAX(COALESCE(last_seen, '')) AS last_seen
+              FROM tracked
+             WHERE TRIM(COALESCE(company_name, '')) <> ''
+             GROUP BY LOWER(TRIM(company_name))
+            """).fetchall()
+        boards = {r["canon"]: r for r in conn.execute(
+            "SELECT canon, last_attempt_at FROM ats_boards").fetchall()}
+    finally:
+        conn.close()
+
+    cutoff = (datetime.now() - timedelta(days=BOARD_TTL_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    out = []
+    for r in rows:
+        canon = canon_company(r["company_name"])
+        if not canon:
+            continue
+        seen = boards.get(canon)
+        if seen and (seen["last_attempt_at"] or "") > cutoff:
+            continue
+        out.append({"canon": canon, "company_name": r["company_name"],
+                    "website": r["website"], "last_seen": r["last_seen"]})
+    out.sort(key=lambda d: (d["last_seen"] or "", d["company_name"]), reverse=True)
+    return out[:limit] if limit else out
+
+
+def ats_urls_for_company(canon_name: str) -> list[str]:
+    """Stored URLs for this company, newest first — the cheapest resolution path.
+
+    A company that has ever surfaced a posting usually did so with its own ATS
+    URL in it, and company_slug() already knows how to read the board token out
+    of one. That costs no requests at all, which is why resolution tries it
+    before fetching anything.
+
+    Filtered in Python rather than SQL because the company match has to go
+    through canon_company(), which is where the Jerry/Jerry.ai and C3.ai/C3 AI
+    aliasing lives; a LIKE on company_name would miss exactly the rows that
+    matter.
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT company_name, url FROM job_matches "
+            "WHERE TRIM(COALESCE(url,'')) <> '' ORDER BY date_found DESC").fetchall()
+    finally:
+        conn.close()
+    return [url for name, url in rows if canon_company(name) == canon_name]
 
 
 # ---------- dedup helpers ----------

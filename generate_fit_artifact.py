@@ -54,7 +54,19 @@ OUT = ROOT / "reports" / "pm_fit_dashboard.html"
 # the three hardcoded copies and left the skill publishing to a dead URL.
 _FALLBACK_ARTIFACT_URL = "https://claude.ai/code/artifact/288b4ad5-27e3-466b-a005-7f2b5b10e635"  # artifact-url-ok
 
-COMP_FLOOR = 150_000  # base-salary deal-breaker
+# Base-salary deal-breaker. Read from config (job_matching.compensation.
+# floor_usd) rather than hardcoded, for the same reason the artifact URL is: a
+# second copy drifts. The literal is the fallback for a config that predates
+# the key, and it must stay equal to the shipped default.
+_COMP_FLOOR_FALLBACK = 150_000
+
+
+def comp_floor() -> int:
+    comp = (_load_config().get("job_matching", {}) or {}).get("compensation", {}) or {}
+    try:
+        return int(comp.get("floor_usd") or _COMP_FLOOR_FALLBACK)
+    except (TypeError, ValueError):
+        return _COMP_FLOOR_FALLBACK
 
 
 def _max_years() -> int:
@@ -225,7 +237,7 @@ def _pending_flags(location: str, comp_max: int | None) -> tuple[list[str], str]
     """Cheap, deterministic gate flags for a not-yet-researched company."""
     flags: list[str] = []
     loc = (location or "").lower()
-    if comp_max is not None and comp_max < COMP_FLOOR:
+    if comp_max is not None and comp_max < comp_floor():
         flags.append(f"Base may be &lt; $150K (posted max ${comp_max:,})")
     is_ny = "new york" in loc or re.search(r"\bny\b|nyc", loc)
     has_alt = any(k in loc for k in ("san francisco", "sf", "bay area", "remote", "ca", "seattle", "mountain view", "palo alto"))
@@ -233,7 +245,7 @@ def _pending_flags(location: str, comp_max: int | None) -> tuple[list[str], str]
         flags.append("NY-only location — fails no-relocation gate")
     if "est" in loc and not any(k in loc for k in ("san francisco", "sf", "remote - usa", "remote, us")):
         flags.append("EST-timezone — check SF compatibility")
-    clears = "N" if (comp_max is not None and comp_max < COMP_FLOOR) else "?"
+    clears = "N" if (comp_max is not None and comp_max < comp_floor()) else "?"
     return flags, clears
 
 
@@ -372,7 +384,7 @@ def build_data() -> tuple[list[dict], dict]:
                 })
             data.append(d)
             _, cmax = _comp_range(" ".join(slot["descs"]))
-            if cmax is not None and cmax < COMP_FLOOR:
+            if cmax is not None and cmax < comp_floor():
                 flagged_cos.append(slot["name"])
         else:
             desc = " ".join(slot["descs"])

@@ -48,3 +48,6 @@ desktop.ini
 
 # Migration backup bundles (contain secrets/DB)
 radar-migration-backup-*.tar.gz
+
+# Cached ATS board responses (sources/jobs/_client.py)
+.cache/

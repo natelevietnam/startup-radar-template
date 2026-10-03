@@ -3,7 +3,7 @@
 import difflib
 import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import (parse_qs, parse_qsl, urlencode, urlparse,
                           urlsplit, urlunsplit)
@@ -66,6 +66,49 @@ _ADDED_COLUMNS = {
         # 0-based rank from targets.industry_priority, or NULL when nothing
         # matched. Written by set_priorities.py; see JobFilter.industry_rank.
         ("industry_rank", "INTEGER"),
+
+        # --- ATS board polling (sources/jobs/) -------------------------------
+        # Rows discovered by polling a company's own board carry the provider
+        # and that board's own id for the posting. Both are derivable from the
+        # URL via _ats_host/requisition_id, but storing them is what lets the
+        # partial unique index below key a posting by its board identity rather
+        # than by (company, title) — the only identity that survives a company
+        # re-titling a req. NULL on every row that came from a feed.
+        ("provider", "TEXT"),
+        ("provider_job_id", "TEXT"),
+        # The board's own publish date, which is NOT date_found: date_found is
+        # when this pipeline first saw the row, and a board can serve a posting
+        # that has been open for months. Recency scoring needs the former.
+        ("posted_at", "TEXT"),
+        # Last run that saw this posting still on its board. Lets "is it still
+        # open" be answered without a fetch, and gives prune_dead_jobs a cheap
+        # pre-filter. Closed rows are still deleted and tombstoned, not flagged.
+        ("last_seen_at", "TEXT"),
+        # The posting body. company_description is a metadata blurb the source
+        # adapters assemble (industry, level, comp), not the posting text, so it
+        # cannot answer "does this posting mention evals or forward deployment".
+        # Scoring description signals needs the real thing.
+        ("description_text", "TEXT DEFAULT ''"),
+        # Parsed compensation. Boards that publish a range give it structurally;
+        # feeds bury it in prose or omit it. comp_known separates "no range
+        # published" from "range published and it is low", which score
+        # differently: most startups omit it and must not be penalised for that.
+        ("comp_min", "INTEGER"),
+        ("comp_max", "INTEGER"),
+        ("comp_known", "INTEGER DEFAULT 0"),
+
+        # --- forward-deployed lens (job_matching.* in config.yaml) -----------
+        # A SECOND opinion, never a gate. targets.* still decides what enters
+        # the board at all; these three only rank what is already there. Tier 1
+        # is the hypothesis, tier 3 is foot-in-the-door and surfaces only for a
+        # company whose dossier scores >= 75 with gates.status == "ready".
+        # Tier 2 is deliberately not implemented. NULL means unscored.
+        ("lens_tier", "INTEGER"),
+        ("lens_score", "INTEGER"),
+        # JSON array of human-readable strings. The reasons are the point: a
+        # number alone is not auditable, and this lens is a hypothesis under
+        # test rather than a settled rule.
+        ("lens_reasons", "TEXT DEFAULT ''"),
     ],
     "tracker_status": [
         # What comp was actually discussed, and at which stage. The tracker
@@ -92,6 +135,28 @@ def _apply_column_migrations(conn) -> None:
         for name, decl in cols:
             if name not in have:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+
+
+# Indexes over columns from _ADDED_COLUMNS, which therefore cannot live in the
+# CREATE TABLE script: on a database that already exists, that script runs
+# before the ALTER TABLEs and the column is not there yet. ("no such column:
+# provider", which is exactly how this was found.)
+_ADDED_INDEXES = (
+    # A posting's identity on its own board. Partial, because every row that
+    # came from a feed has NULL for both halves and SQLite treats NULLs as
+    # distinct — without the WHERE clause this would still work, but it would
+    # index a thousand NULL pairs to no purpose. This is what makes board
+    # polling idempotent: a re-run updates the same row even when the employer
+    # has re-titled the req, which idx_jobs_company_role cannot do.
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_provider_jobid
+           ON job_matches(provider, provider_job_id)
+           WHERE provider IS NOT NULL AND provider_job_id IS NOT NULL""",
+)
+
+
+def _apply_index_migrations(conn) -> None:
+    for stmt in _ADDED_INDEXES:
+        conn.execute(stmt)
 
 
 def init_db() -> None:
@@ -141,6 +206,23 @@ def init_db() -> None:
                 role_title TEXT DEFAULT '',
                 deleted_at TEXT DEFAULT (datetime('now')),
                 PRIMARY KEY (company_name COLLATE NOCASE, role_title COLLATE NOCASE)
+            );
+
+            -- Which ATS board each tracked company posts on, so a company is
+            -- resolved to a board once rather than on every run. A row with a
+            -- NULL provider is a company we FAILED to resolve: kept on purpose,
+            -- so a failure is remembered and retried on a schedule instead of
+            -- re-attempted every single run. Keyed on the canonical company
+            -- name, which is the join the rest of this module already uses.
+            CREATE TABLE IF NOT EXISTS ats_boards (
+                canon TEXT PRIMARY KEY,
+                company_name TEXT DEFAULT '',
+                provider TEXT,
+                token TEXT,
+                resolved_at TEXT,
+                last_attempt_at TEXT,
+                attempts INTEGER DEFAULT 0,
+                last_error TEXT DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS connections (
@@ -197,9 +279,151 @@ def init_db() -> None:
             );
         """)
         _apply_column_migrations(conn)
+        _apply_index_migrations(conn)
         conn.commit()
     finally:
         conn.close()
+
+
+# ---------- ATS board resolution cache ----------
+
+# How long a resolution stands before it is checked again. The spec says not to
+# re-resolve more than weekly; a board token changes about never, so this is
+# mostly about eventually retrying the ones that failed.
+BOARD_TTL_DAYS = 7
+
+
+def get_board(canon_name: str) -> Optional[dict]:
+    """The cached board for a canonical company name, resolved or failed."""
+    conn = _connect()
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM ats_boards WHERE canon = ?", (canon_name,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def upsert_board(canon_name: str, company_name: str, provider: Optional[str],
+                 token: Optional[str], error: str = "") -> None:
+    """Record a resolution attempt, successful or not.
+
+    A failure is stored rather than dropped, which is the whole point of the
+    table: without a row, every run would re-attempt every unresolvable company
+    and spend its entire request budget on the same dead ends. `attempts`
+    accumulates so a company that has failed repeatedly can be backed off or
+    reported on later.
+    """
+    conn = _connect()
+    try:
+        conn.execute(
+            """INSERT INTO ats_boards
+                   (canon, company_name, provider, token, resolved_at,
+                    last_attempt_at, attempts, last_error)
+               VALUES (?, ?, ?, ?, ?, datetime('now'), 1, ?)
+               ON CONFLICT(canon) DO UPDATE SET
+                   company_name    = excluded.company_name,
+                   provider        = excluded.provider,
+                   token           = excluded.token,
+                   resolved_at     = COALESCE(excluded.resolved_at, ats_boards.resolved_at),
+                   last_attempt_at = datetime('now'),
+                   attempts        = ats_boards.attempts + 1,
+                   last_error      = excluded.last_error""",
+            (canon_name, company_name, provider, token,
+             datetime.now().strftime("%Y-%m-%d %H:%M:%S") if provider else None,
+             error[:300]))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def resolved_boards() -> list[dict]:
+    """Every company with a usable board, for the polling pass."""
+    conn = _connect()
+    try:
+        conn.row_factory = sqlite3.Row
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM ats_boards WHERE provider IS NOT NULL AND "
+            "TRIM(COALESCE(token,'')) <> '' ORDER BY company_name")]
+    finally:
+        conn.close()
+
+
+def companies_needing_resolution(limit: int = 35) -> list[dict]:
+    """Tracked companies to attempt next, most promising first.
+
+    Tracked means: on the startups watchlist, or already carrying a job_matches
+    row — a company that has posted a role we kept is at least as interesting as
+    one from a funding feed.
+
+    Ordered by the best evidence available that the company is worth the request
+    budget: how recently it has had a posting on the board, then name. The caller
+    re-ranks by dossier score, which lives in a JSON file this module does not
+    read.
+
+    Companies whose last attempt is within BOARD_TTL_DAYS are skipped, resolved
+    or not, so a run spends its budget on new ground rather than re-asking.
+    """
+    conn = _connect()
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            WITH tracked AS (
+                SELECT company_name, website, NULL AS last_seen FROM startups
+                UNION ALL
+                SELECT company_name, NULL, MAX(date_found) FROM job_matches
+                 GROUP BY company_name
+            )
+            SELECT company_name,
+                   MAX(COALESCE(website, ''))   AS website,
+                   MAX(COALESCE(last_seen, '')) AS last_seen
+              FROM tracked
+             WHERE TRIM(COALESCE(company_name, '')) <> ''
+             GROUP BY LOWER(TRIM(company_name))
+            """).fetchall()
+        boards = {r["canon"]: r for r in conn.execute(
+            "SELECT canon, last_attempt_at FROM ats_boards").fetchall()}
+    finally:
+        conn.close()
+
+    cutoff = (datetime.now() - timedelta(days=BOARD_TTL_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    out = []
+    for r in rows:
+        canon = canon_company(r["company_name"])
+        if not canon:
+            continue
+        seen = boards.get(canon)
+        if seen and (seen["last_attempt_at"] or "") > cutoff:
+            continue
+        out.append({"canon": canon, "company_name": r["company_name"],
+                    "website": r["website"], "last_seen": r["last_seen"]})
+    out.sort(key=lambda d: (d["last_seen"] or "", d["company_name"]), reverse=True)
+    return out[:limit] if limit else out
+
+
+def ats_urls_for_company(canon_name: str) -> list[str]:
+    """Stored URLs for this company, newest first — the cheapest resolution path.
+
+    A company that has ever surfaced a posting usually did so with its own ATS
+    URL in it, and company_slug() already knows how to read the board token out
+    of one. That costs no requests at all, which is why resolution tries it
+    before fetching anything.
+
+    Filtered in Python rather than SQL because the company match has to go
+    through canon_company(), which is where the Jerry/Jerry.ai and C3.ai/C3 AI
+    aliasing lives; a LIKE on company_name would miss exactly the rows that
+    matter.
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT company_name, url FROM job_matches "
+            "WHERE TRIM(COALESCE(url,'')) <> '' ORDER BY date_found DESC").fetchall()
+    finally:
+        conn.close()
+    return [url for name, url in rows if canon_company(name) == canon_name]
 
 
 # ---------- dedup helpers ----------
@@ -1192,7 +1416,7 @@ def get_all_job_matches() -> pd.DataFrame:
         df = pd.read_sql_query(
             """SELECT company_name, company_description, role_title,
                       location, url, priority, source, industry_rank,
-                      status, date_found, notes
+                      status, date_found, notes, lens_score, lens_tier
                FROM job_matches ORDER BY date_found DESC, id DESC""",
             conn,
         )
@@ -1201,6 +1425,7 @@ def get_all_job_matches() -> pd.DataFrame:
     df.columns = [
         "Company", "Company Description", "Role", "Location", "Link",
         "Priority", "Source", "Industry", "Status", "Date Found", "Notes",
+        "Lens", "Tier",
     ]
     df["Status"] = df["Status"].fillna("")
     df["Notes"] = df["Notes"].fillna("")
@@ -1210,6 +1435,11 @@ def get_all_job_matches() -> pd.DataFrame:
     # which reads as "no preference expressed", not "worst".
     _labels = industry_labels()
     df["Industry"] = df["Industry"].map(lambda r: _labels.get(r, "") if pd.notna(r) else "")
+    # Lens columns read blank rather than 0 when unscored, for the same reason
+    # Industry does: a row score_lens.py has not reached yet has no opinion
+    # attached, which is not the same as scoring nothing.
+    df["Lens"] = df["Lens"].map(lambda v: int(v) if pd.notna(v) else None)
+    df["Tier"] = df["Tier"].map(lambda v: f"T{int(v)}" if pd.notna(v) else "")
     return df
 
 

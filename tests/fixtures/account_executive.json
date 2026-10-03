@@ -1,0 +1,12 @@
+{
+  "_source": "synthetic — acceptance criterion 5: must never score as a match",
+  "company_name": "Example Co",
+  "role_title": "Account Executive, Enterprise",
+  "location": "San Francisco, CA",
+  "description_text": "Own a quota selling to enterprise customers. Run discovery, build a playbook, manage stakeholder relationships through deployment.",
+  "comp_min": 150000,
+  "comp_max": 300000,
+  "comp_known": 1,
+  "sponsorship": null,
+  "posted_at": "2026-10-01"
+}

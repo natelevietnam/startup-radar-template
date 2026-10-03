@@ -196,6 +196,26 @@ class JobFilter:
     def __init__(self, cfg: dict):
         targets = cfg["targets"]
         self.roles = [r.lower() for r in targets.get("roles", [])]
+        # Tier-1 titles from the forward-deployed lens count as roles too, so a
+        # title the hypothesis names is admitted even when it contains no
+        # "product manager" substring. Six of the twelve do not: "forward
+        # deployed PM" is the abbreviation, "deployment strategist" is
+        # Palantir's name for the same job, and "agent operator", "agent
+        # operations", "AI strategist" and "customer impact" name the work or
+        # the team rather than the title. Without this they never reach the
+        # board, and the lens scores an empty set for half its own taxonomy.
+        #
+        # This widens only the POSITIVE match. Every exclusion below still
+        # applies on top, so a "Founding Deployment Strategist" or a "Principal
+        # Forward Deployed PM" is still cut — the 2026-09-09 narrowing stands.
+        # Tier 2 is not read here at all, and tier 3 only when its own
+        # tier_3_admitted_at_ingest flag is set.
+        jm = cfg.get("job_matching") or {}
+        tiers = (jm.get("title_tiers") or {}) if jm.get("enabled") else {}
+        lens_titles = list(tiers.get("tier_1") or [])
+        if tiers.get("tier_3_admitted_at_ingest"):
+            lens_titles += list(tiers.get("tier_3") or [])
+        self.lens_titles = [t.lower() for t in lens_titles if str(t).strip()]
         self.exclusions = [e.lower() for e in targets.get("seniority_exclusions", [])]
         self.locations = [loc.lower() for loc in targets.get("locations", [])]
         self._excl_co_patterns = _excluded_company_patterns(targets)
@@ -248,9 +268,10 @@ class JobFilter:
         t = title.lower()
         if any(p.search(t) for p in self._excl_seniority_patterns):
             return False
-        if not self.roles:
+        if not self.roles and not self.lens_titles:
             return True
-        return any(r in t for r in self.roles)
+        return (any(r in t for r in self.roles)
+                or any(r in t for r in self.lens_titles))
 
     def seniority_excluded(self, title: str, description: str = "") -> bool:
         """True if the role sits outside the seniority band you're targeting.

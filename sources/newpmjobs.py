@@ -141,6 +141,24 @@ def _format_comp(comp: dict) -> str:
     return f"{prefix} {_thousands(lo, sym)}–{_thousands(hi, sym)}{mid} ({reports})"
 
 
+# DOM text the feed welds onto the front of a title. NewPMJobs renders its
+# board client-side and its API has twice served "output-arrowSenior Product
+# Manager, Monetization" — the name of an icon element glued to the real title.
+#
+# It has to be stripped at ingest, not afterwards, because the prefix defeats
+# every dedupe guard at once: it changes the (company_name, role_title) unique
+# index key AND canon_role, so the same posting re-enters as a new row. On
+# 2026-10-04 that resurfaced a Hex role already marked Applied — the one thing
+# the board must never do. Cleaning it in the database after the fact does not
+# help; the next run re-inserts it.
+_TITLE_JUNK = re.compile(r"^(?:output-arrow|output_arrow|arrow-right|chevron-right)+",
+                         re.IGNORECASE)
+
+
+def _clean_title(title: str) -> str:
+    return _TITLE_JUNK.sub("", (title or "").strip()).strip()
+
+
 def _format_company_description(job: dict) -> str:
     """Best-effort context line so the dashboard shows something meaningful."""
     company = job.get("company") or {}
@@ -192,7 +210,7 @@ def fetch(cfg: dict | None = None) -> list[dict]:
         out.append({
             "company_name": company.strip(),
             "company_description": _format_company_description(j),
-            "role_title": role.strip(),
+            "role_title": _clean_title(role),
             "location": (j.get("location") or "").strip(),
             "url": j.get("urlPath") or "",
             "priority": "",

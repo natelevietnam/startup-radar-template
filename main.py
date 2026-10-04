@@ -543,7 +543,15 @@ def run() -> int:
             jobs = [j for j in jobs if not flt.company_excluded(j.get("company_name", ""))]
             jobs = [j for j in jobs if not flt.seniority_excluded(
                 j.get("role_title", ""), j.get("company_description", ""))]
-            jobs = [j for j in jobs if not flt.location_excluded(j.get("location", ""))]
+            # location_matches, not location_excluded. The latter reads like a
+            # location gate and is not one: its own docstring calls it a hard
+            # gate against non-US *remote* roles, so "JP-Tokyo" passes it —
+            # there is no "remote" in the string for is_non_us_remote to catch.
+            # A board hands over every office a company has, which is exactly
+            # the input that needs the positive "is this one of my cities?"
+            # test every other source opts into. Tokyo, Washington D.C. and a
+            # five-city Databricks posting all reached the board before this.
+            jobs = [j for j in jobs if flt.location_matches(j.get("location", ""))]
             jobs = [j for j in jobs if flt.role_matches(j.get("role_title", ""))]
             if len(jobs) != _n:
                 print(f"  {len(jobs)} after the standard filter chain ({_n - len(jobs)} dropped)")

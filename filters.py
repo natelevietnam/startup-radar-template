@@ -64,6 +64,31 @@ def _normalize_location(location: str) -> str:
     return re.sub(r"[.'’]", " ", location.lower())
 
 
+
+# A posting open across the whole country, with no city named: "United States",
+# "USA", "Remote - United States". Written as a whole-string match on each
+# "|"- or ";"-separated part, so "Itasca, Illinois, us" is NOT nationwide — it
+# names a city, and the city is what `targets.locations` is there to judge.
+_US_NATIONWIDE = re.compile(
+    r"^(?:remote\s*[-,]?\s*)?(?:u\s?s\s?a?|united states(?: of america)?)"
+    r"(?:\s*[-,]?\s*remote)?$"
+)
+
+
+def is_us_nationwide(location: str) -> bool:
+    """True if `location` says "anywhere in the US" and names no city.
+
+    An employer's own board writes a distributed US role this way — Databricks
+    posts its forward-deployed roles as a bare "United States" — and such a role
+    is at least as reachable as the plain "remote" that `targets.locations`
+    already accepts. Without this, reading the positive location test literally
+    would drop exactly the postings that are most open about being location-free.
+    """
+    for part in (location or "").replace(";", "|").split("|"):
+        if _US_NATIONWIDE.match(_normalize_location(part).strip(" ,-")):
+            return True
+    return False
+
 def is_non_us_remote(location: str) -> bool:
     """True if `location` describes a remote role based outside the US.
 
@@ -390,6 +415,10 @@ class JobFilter:
             return False
         lower = location.lower()
         if "remote" in lower:
+            return True
+        # A nationwide US posting names no city to match, and is as reachable
+        # as the bare "remote" admitted above.
+        if is_us_nationwide(location):
             return True
         return any(loc in lower for loc in self.locations)
 

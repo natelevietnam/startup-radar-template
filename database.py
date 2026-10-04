@@ -1343,6 +1343,29 @@ def insert_startups(startups: list) -> int:
     return count
 
 
+# Columns an ATS-board row carries that a newsletter row does not. The board
+# poller computes every one of them — sources/jobs/_shape.row assembles the
+# posting fields, and main.py merges job_lens' verdict in with
+# `j.update(verdict.as_row())` before inserting — and the INSERT below listed
+# nine fixed columns, so all of it was dropped on the floor.
+#
+# The cost was not cosmetic. A posting had to score board_ingest_min_score or
+# better to be written at all, and the score that admitted it was not stored:
+# the dashboard's lens column read blank for exactly the rows the lens exists
+# to find, and score_lens.py, re-deriving them later, had no description_text
+# to read, so the description_signals half of the taxonomy — the half that
+# exists because "the title in this niche is the unreliable part" — scored
+# nothing on them.
+#
+# Listed rather than inferred from the dict: a caller's stray key must never
+# become a column name, and a column added to the schema should be a deliberate
+# line here.
+_OPTIONAL_JOB_COLUMNS = (
+    "provider", "provider_job_id", "posted_at", "description_text",
+    "comp_min", "comp_max", "comp_known",
+    "lens_tier", "lens_score", "lens_reasons",
+)
+
 def insert_job_matches(jobs: list) -> int:
     if not jobs:
         return 0
@@ -1379,6 +1402,13 @@ def insert_job_matches(jobs: list) -> int:
             values[2] = clean_text(values[2])
             values = tuple(values)
 
+            # Whatever of the board-only columns this row actually carries. A
+            # JobMatch has none, so its INSERT is byte-for-byte what it was.
+            extras = {} if isinstance(j, JobMatch) else {
+                col: j[col] for col in _OPTIONAL_JOB_COLUMNS
+                if col in j and j[col] is not None
+            }
+
             ckey = _canon_job_key(values[0], values[2])
             curl = canon_url(values[4])
             if ckey in tombstoned:
@@ -1402,13 +1432,14 @@ def insert_job_matches(jobs: list) -> int:
                 # both differ, so only the requisition id catches it.
                 if creq[0] and creq[1] and creq in seen_reqs:
                     continue
+            cols = ["company_name", "company_description", "role_title", "location",
+                    "url", "priority", "source", "status", "date_found",
+                    *extras]
             try:
                 conn.execute(
-                    """INSERT INTO job_matches
-                       (company_name, company_description, role_title, location,
-                        url, priority, source, status, date_found)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    values,
+                    f"INSERT INTO job_matches ({', '.join(cols)}) "
+                    f"VALUES ({', '.join('?' * len(cols))})",
+                    (*values, *extras.values()),
                 )
                 count += 1
                 seen_keys.add(ckey)

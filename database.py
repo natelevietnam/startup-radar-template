@@ -525,6 +525,38 @@ def _boundary_prefix(short: str, long_: str) -> bool:
     return used == len(a)
 
 
+def _slug_links_name(slug: str, name: str) -> bool:
+    """True if an ATS board slug identifies the employer `name`.
+
+    `_boundary_prefix` answers a different question — does the longer *name*
+    extend the shorter one — and returns False when the two strings are equal,
+    because for two company names equality means one employer and the pair is
+    already discarded. Reused for slug-against-name that rule inverts: an exact
+    match is the strongest evidence there is, and it was the one case scoring
+    nothing. Method's board is jobs.ashbyhq.com/method and the other row's
+    company is "Method"; the pair scored 2 of the 3 signals it needed.
+    """
+    if not slug or not name:
+        return False
+    return _despace(slug) == _despace(name) or _boundary_prefix(slug, name)
+
+
+def _cities(location: str) -> set:
+    """The cities in a location string, which may list several.
+
+    Feeds write multi-location reqs as "New York, NY | San Francisco, CA", and
+    reading only the text before the first comma compares New York against a
+    row that says San Francisco while both list San Francisco. Each
+    "|"-separated part contributes its own leading segment.
+    """
+    out = set()
+    for part in (location or "").split("|"):
+        city = part.split(",")[0].strip().lower()
+        if city:
+            out.add(city)
+    return out
+
+
 def same_company_signals(a: dict, b: dict) -> int:
     """How many independent signals say two rows share an employer.
 
@@ -545,16 +577,16 @@ def same_company_signals(a: dict, b: dict) -> int:
     sa, sb = company_slug(a.get("url", "")), company_slug(b.get("url", ""))
     slug_link = bool(
         (sa and sb and sa == sb)
-        or (sa and _boundary_prefix(sa, names[1]))
-        or (sb and _boundary_prefix(sb, names[0]))
+        or _slug_links_name(sa, names[1])
+        or _slug_links_name(sb, names[0])
     )
     if not (name_link or slug_link):
         return 0
     ra, rb = canon_role(a.get("role_title", "")), canon_role(b.get("role_title", ""))
     same_role = bool(ra) and ra == rb
-    ca = (a.get("location") or "").split(",")[0].strip().lower()
-    cb = (b.get("location") or "").split(",")[0].strip().lower()
-    return sum((name_link, slug_link, same_role, bool(ca) and ca == cb))
+    ca, cb = _cities(a.get("location", "")), _cities(b.get("location", ""))
+    same_city = bool(ca & cb)
+    return sum((name_link, slug_link, same_role, same_city))
 
 
 def same_company_candidates(min_signals: int = 3) -> list:

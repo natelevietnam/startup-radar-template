@@ -576,8 +576,12 @@ elif page == "Job Matches":
     # from different hosts. database's detectors score name/slug/title/city
     # instead, and this is where their answer surfaces, next to the grid where
     # a row can actually be deleted.
+    # Through the cached wrapper, not database.* directly: the two sweeps cost
+    # ~4s at 1200 rows and grow with the square of the row count, and Streamlit
+    # reruns this whole script on every filter change, checkbox and cell edit.
+    # Keyed on _db_stamp() like the other reads, so a write still invalidates it.
     try:
-        _dupes = database.duplicate_employer_pairs()
+        _dupes = _duplicate_employer_pairs(_db_stamp())
     except Exception as _dupe_err:                       # never break the page
         _dupes = {"settled": [], "open": []}
         st.caption(f"Duplicate check unavailable: {_dupe_err}")

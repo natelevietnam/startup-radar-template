@@ -694,26 +694,45 @@ def retitled_repost_candidates() -> list:
             "       COALESCE(status,'') FROM job_matches")]
     finally:
         conn.close()
-    out, seen = [], set()
-    for i, a in enumerate(rows):
-        for b in rows[i + 1:]:
-            if canon_company(a["company_name"]) != canon_company(b["company_name"]):
+    # Grouped by employer rather than compared pairwise. Every pair this can
+    # return shares a canonical company, so the whole-table O(n^2) scan spent
+    # its time proving that two unrelated rows are unrelated: at 1222 rows that
+    # is 746,031 comparisons and ~1.5M canon_company calls, for a sweep that
+    # ran uncached on every dashboard interaction. Bucketing first makes the
+    # cost the sum of the squares of the group sizes, and the largest employer
+    # here has ~40 rows.
+    #
+    # Each row's derived values are computed once, when it is bucketed, instead
+    # of once per pair it appears in. Output is unchanged: the same pairs in the
+    # same order, because groups are built in row order and each group is still
+    # walked i < j.
+    buckets: dict[str, list] = {}
+    for row in rows:
+        canon = canon_company(row["company_name"])
+        if not canon:
+            continue
+        role = canon_role(row["role_title"])
+        if not role:                        # nothing to compare titles on
+            continue
+        city = (row.get("location") or "").split(",")[0].strip().lower()
+        if not city:                        # one city, or it is two openings
+            continue
+        buckets.setdefault(canon, []).append(
+            (row, role, _band_stripped_role(row["role_title"]), city))
+
+    out = []
+    for group in buckets.values():
+        if len(group) < 2:
+            continue
+        for i, (a, ra, ba, ca) in enumerate(group):
+            if not ba:
                 continue
-            ra, rb = canon_role(a["role_title"]), canon_role(b["role_title"])
-            if not ra or ra == rb:          # identical titles are the index's job
-                continue
-            ba, bb = _band_stripped_role(a["role_title"]), _band_stripped_role(b["role_title"])
-            if not ba or ba != bb:
-                continue
-            ca = (a.get("location") or "").split(",")[0].strip().lower()
-            cb = (b.get("location") or "").split(",")[0].strip().lower()
-            if not ca or ca != cb:          # one city, or it is two openings
-                continue
-            key = tuple(sorted((a["id"], b["id"])))
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append((a, b))
+            for b, rb, bb, cb in group[i + 1:]:
+                if ra == rb:                # identical titles are the index's job
+                    continue
+                if ba != bb or ca != cb:
+                    continue
+                out.append((a, b))
     return out
 
 # DECIDED_STATUSES rows are ones the user has ruled on. A pair where exactly one

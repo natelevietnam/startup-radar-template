@@ -83,11 +83,24 @@ def is_us_nationwide(location: str) -> bool:
     is at least as reachable as the plain "remote" that `targets.locations`
     already accepts. Without this, reading the positive location test literally
     would drop exactly the postings that are most open about being location-free.
+
+    EVERY part has to be a nationwide token, not merely one of them. Workday
+    appends the country to a list of offices, so "McLean, VA | Richmond, VA |
+    Chicago, IL | New York, NY | United States of America" was reading as
+    nationwide on the strength of its last segment — a four-city onsite role,
+    none of them in the Bay Area, admitted as though it were location-free. The
+    docstring already said "and names no city"; the loop did not enforce it.
+
+    Five rows on the board arrived this way against seven genuine bare-"United
+    States" postings, so the rule earns its place — it just has to mean what it
+    says.
     """
-    for part in (location or "").replace(";", "|").split("|"):
-        if _US_NATIONWIDE.match(_normalize_location(part).strip(" ,-")):
-            return True
-    return False
+    parts = [_normalize_location(p).strip(" ,-")
+             for p in (location or "").replace(";", "|").split("|")]
+    parts = [p for p in parts if p]
+    if not parts:
+        return False
+    return all(_US_NATIONWIDE.match(p) for p in parts)
 
 def is_non_us_remote(location: str) -> bool:
     """True if `location` describes a remote role based outside the US.

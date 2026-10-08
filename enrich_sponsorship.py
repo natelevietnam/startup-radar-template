@@ -247,8 +247,54 @@ def _text_wellfound(url: str):
     return "wellfound-canonical", " ".join(parts)
 
 
+def _text_workday(url: str):
+    """Workday's own CXS JSON API, which serves the text the page never does.
+
+    Workday renders the posting client-side, so a plain fetch of the page
+    returns a shell with no requirements in it. For weeks that made every
+    Workday employer a blind spot: the stance came back NULL, meaning only
+    "never successfully read", and `require_visa_sponsorship` had nothing to act
+    on. PNC, General Motors, Capital One and USAA all reached the board that
+    way, and two of them were caught only because a human opened the posting in
+    a browser.
+
+    The text is behind the same host at a documented path:
+
+        /wday/cxs/{tenant}/{site}/job/{everything-after-/job/}
+
+    Capital One's req R246457 carries "At this time, Capital One will not
+    sponsor a new applicant for employment authorization for this position",
+    and USAA's carries "USAA does not provide visa sponsorship for this role" —
+    neither of which the rendered page would ever have given us.
+
+    The whole payload is searched, not just jobDescription: employers put this
+    sentence in the description, in a legal block, or in a separate field
+    depending on how their tenant is configured, and missing it is the failure
+    that matters here.
+    """
+    m = re.match(r"https://([^.]+)\.(wd\d+)\.myworkdayjobs\.com/([^/]+)/job/(.+)$",
+                 url or "")
+    if not m:
+        return None
+    tenant, wd, site, path = m.groups()
+    api = (f"https://{tenant}.{wd}.myworkdayjobs.com"
+           f"/wday/cxs/{tenant}/{site}/job/{path}")
+    try:
+        resp = requests.get(api, headers={**_UA, "Accept": "application/json"},
+                            timeout=_TIMEOUT)
+    except requests.RequestException:
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        payload = resp.json()
+    except ValueError:
+        return None
+    return "workday-cxs", _strip_html(json.dumps(payload))
+
+
 _TEXT_SOURCES = (_text_greenhouse, _text_ashby, _text_smartrecruiters,
-                 _text_wellfound)
+                 _text_wellfound, _text_workday)
 
 
 def _fetch(row: dict) -> tuple[dict, str | None, str, str]:

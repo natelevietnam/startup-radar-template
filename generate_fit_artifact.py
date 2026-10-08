@@ -52,7 +52,13 @@ OUT = ROOT / "reports" / "pm_fit_dashboard.html"
 # Everything that needs it (app.py, the startup-radar skill) must call that
 # function rather than hardcode a copy; a previous migration updated two of
 # the three hardcoded copies and left the skill publishing to a dead URL.
-_FALLBACK_ARTIFACT_URL = "https://claude.ai/code/artifact/288b4ad5-27e3-466b-a005-7f2b5b10e635"  # artifact-url-ok
+# Re-addressed 2026-10-08, when the platform moved artifact links from
+# claude.ai/code/artifact/<uuid> to claude.ai/artifact/<id>. Same artifact and
+# the same version history; only the address changed. This is the fallback for
+# a config without the key, so it has to track whatever config.yaml holds —
+# a stale copy here is precisely how the skill once published to a dead URL
+# for weeks.
+_FALLBACK_ARTIFACT_URL = "https://claude.ai/artifact/61P4rzB3mg64Mm6y23Nw5n"  # artifact-url-ok
 
 # Base-salary deal-breaker. Read from config (job_matching.compensation.
 # floor_usd) rather than hardcoded, for the same reason the artifact URL is: a

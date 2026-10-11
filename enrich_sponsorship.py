@@ -35,11 +35,18 @@ answer is the authoritative posting text and is immune to client rendering.
 
 Usage:
     python enrich_sponsorship.py [--dry-run] [--apply] [--limit N] [--recheck]
+                                 [--missing-text]
 
-    (default)   fetch and store the stance for rows that lack one
-    --dry-run   report what would be stored, write nothing
-    --apply     additionally file explicit refusals as Not Interested
-    --recheck   re-fetch rows already carrying a value
+    (default)       fetch and store the stance for rows that lack one
+    --dry-run       report what would be stored, write nothing
+    --apply         additionally file explicit refusals as Not Interested
+    --recheck       re-fetch rows already carrying a value
+    --missing-text  also read rows whose stance is stored but whose body is not
+
+The body of every posting it reads is stored on job_matches.description_text,
+because the lens needs it and this is the only pass that fetches it. Scoring a
+posting on its title and its city is what produced 23 identical scores of 20 on
+the 11 Oct screen; the rows this pass fills are handed back to score_lens.py.
 """
 
 from __future__ import annotations
@@ -297,11 +304,26 @@ _TEXT_SOURCES = (_text_greenhouse, _text_ashby, _text_smartrecruiters,
                  _text_wellfound, _text_workday)
 
 
-def _fetch(row: dict) -> tuple[dict, str | None, str, str]:
-    """Return (row, stance, evidence, note). stance None means 'unreadable'."""
+# The posting body, as stored on job_matches.description_text. Capped because
+# the Workday reader hands over its entire CXS payload and a few of those run
+# past 100KB; the lens only ever keyword-matches this text, so the tail is
+# weight without value.
+_TEXT_CAP = 20_000
+
+
+def _fetch(row: dict) -> tuple[dict, str | None, str, str, str]:
+    """Return (row, stance, evidence, note, text). stance None means 'unreadable'.
+
+    `text` is the posting body this pass read, returned so the caller can store
+    it. It was always being fetched — every reader below, and the HTML fallback,
+    produce the whole body, and until now all of it but one sentence of evidence
+    was discarded at the end of this function. That is why 48 rows reached the
+    11 Oct screen scored "No posting body stored — signals could not be read":
+    not because the text was unavailable, but because nothing kept it.
+    """
     url = (row.get("url") or "").strip()
     if not url:
-        return row, None, "", "no url"
+        return row, None, "", "no url", ""
     try:
         via, text = "", ""
         for source in _TEXT_SOURCES:
@@ -312,25 +334,29 @@ def _fetch(row: dict) -> tuple[dict, str | None, str, str]:
         if not text:
             resp = requests.get(url, headers=_UA, timeout=_TIMEOUT, allow_redirects=True)
             if resp.status_code != 200:
-                return row, None, "", f"HTTP {resp.status_code}"
+                return row, None, "", f"HTTP {resp.status_code}", ""
             via, text = "html", _strip_html(resp.text)
     except Exception as exc:                       # timeout, DNS, TLS — unreadable
-        return row, None, "", type(exc).__name__
+        return row, None, "", type(exc).__name__, ""
 
     # A body this short is a client-rendered shell, not the posting — unread,
-    # not silent, so it stays NULL and gets retried on the next run.
+    # not silent, so it stays NULL and gets retried on the next run. The text is
+    # dropped rather than returned: a few hundred characters of site navigation
+    # stored as description_text would read, to the lens, exactly like a posting
+    # that mentions none of its signals.
     if len(text) < 400:
-        return row, None, "", f"{via} too thin"
+        return row, None, "", f"{via} too thin", ""
     stance, evidence = classify(text)
     if stance is None:
-        return row, SILENT, "", via
-    return row, stance, evidence, via
+        return row, SILENT, "", via, text
+    return row, stance, evidence, via, text
 
 
 def main(argv: list[str]) -> int:
     dry = "--dry-run" in argv
     apply_cuts = "--apply" in argv
     recheck = "--recheck" in argv
+    missing_text = "--missing-text" in argv
     limit = 0
     if "--limit" in argv:
         limit = int(argv[argv.index("--limit") + 1])
@@ -342,16 +368,31 @@ def main(argv: list[str]) -> int:
 
     con = sqlite3.connect(str(DB))
     con.row_factory = sqlite3.Row
-    where = "" if recheck else " AND sponsorship IS NULL"
+    # --missing-text widens the selection to rows whose stance is already
+    # stored but whose body is not. Those rows were read before this pass kept
+    # the text, so their stance is settled and only description_text is missing;
+    # re-reading them is how the backlog gets filled without --recheck's
+    # rewrite of every stance on the board.
+    if recheck:
+        where = ""
+    elif missing_text:
+        where = " AND (sponsorship IS NULL OR TRIM(COALESCE(description_text,'')) = '')"
+    else:
+        where = " AND sponsorship IS NULL"
     rows = [dict(r) for r in con.execute(
         "SELECT id, company_name, role_title, url FROM job_matches "
         "WHERE TRIM(COALESCE(status,'')) = '' AND TRIM(COALESCE(url,'')) <> ''" + where
         + " ORDER BY id" + (f" LIMIT {limit}" if limit else ""))]
     print(f"reading {len(rows)} posting(s){' (dry-run)' if dry else ''}")
 
-    found, refused, unread = [], [], 0
+    found, refused, bodies, unread = [], [], [], 0
     with cf.ThreadPoolExecutor(max_workers=_WORKERS) as ex:
-        for row, stance, evidence, note in ex.map(_fetch, rows):
+        for row, stance, evidence, note, text in ex.map(_fetch, rows):
+            # Kept whenever a body was actually read, independently of what the
+            # stance turned out to be: a posting that says nothing about visas
+            # still says everything else, and that is the half the lens reads.
+            if text:
+                bodies.append((text[:_TEXT_CAP], row["id"]))
             if stance is None:
                 unread += 1
                 continue
@@ -362,6 +403,8 @@ def main(argv: list[str]) -> int:
     silent = sum(1 for _, s, _ in found if s == SILENT)
     print(f"  read: {len(found)} ({silent} said nothing) · unreadable: {unread} · "
           f"explicit refusals: {len(refused)}")
+    print(f"  bodies read: {len(bodies)}"
+          + (" (not stored — dry-run)" if dry else ""))
     for row, evidence in refused:
         print(f"    #{row['id']} {row['company_name'][:22]:<22} {row['role_title'][:40]}")
         print(f"        \"{evidence[:120]}\"")
@@ -375,6 +418,23 @@ def main(argv: list[str]) -> int:
         [(s, e[:400], r["id"]) for r, s, e in found])
     con.commit()
     print(f"  stored {len(found)} stance(s)")
+
+    if bodies:
+        con.executemany(
+            "UPDATE job_matches SET description_text = ? WHERE id = ?", bodies)
+        # A row that was scored without a body was scored on its title and its
+        # city. Clearing the score — and only for the rows whose body this run
+        # stored — hands them back to score_lens.py, which by default scores
+        # exactly the rows where lens_score IS NULL. Nothing else on the board
+        # is disturbed, and re-running this pass is idempotent.
+        cur = con.execute(
+            "UPDATE job_matches SET lens_tier = NULL, lens_score = NULL, "
+            "lens_reasons = '' WHERE id IN (%s)"
+            % ",".join("?" * len(bodies)), [i for _, i in bodies])
+        con.commit()
+        print(f"  stored {len(bodies)} posting body(ies) · "
+              f"{cur.rowcount} row(s) reopened for scoring")
+        print("  next: python score_lens.py   (scores the reopened rows)")
 
     if apply_cuts:
         # Every undecided refusal, not only the ones read on this run — the

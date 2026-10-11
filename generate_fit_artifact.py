@@ -101,11 +101,28 @@ AUTO_REFRESH_SCORE = 75
 
 
 def _norm(name: str) -> str:
-    """Normalize a company name for matching (lowercase, drop suffixes/punct)."""
-    n = (name or "").strip().lower()
-    n = re.sub(r"\b(inc|llc|corp|co|ltd|technologies|labs)\b\.?", "", n)
-    n = re.sub(r"[^a-z0-9]+", " ", n).strip()
-    return n
+    """Normalize a company name for matching — delegating to the one that counts.
+
+    This used to be its own regex, and it quietly disagreed with
+    database.canon_company on 27 of the 717 company names stored. The visible
+    cost was three companies whose dossiers never attached here and therefore
+    rendered as "pending" on the dashboard despite being researched:
+
+        "Jerry.ai"                        -> dossier "Jerry"
+        "Samsung Research America (SRA)"  -> dossier "Samsung Research America"
+        "Superhuman (formerly Grammarly)" -> dossier "Superhuman"
+
+    canon_company strips parenthesised aliases and a domain tail and carries the
+    rebrand table (Abnormal, C3); this function did none of that. Two identity
+    functions for one concept is the same defect as a second copy of the artifact
+    URL, and it fails the same way — silently, and only for the rows that matter.
+
+    Checked against every stored company name before switching: no row loses a
+    dossier it currently matches, three gain the one they should always have had,
+    and the only names that collapse together are genuinely one employer
+    (C3 AI/C3.ai, EarnIn/Earnin, Jerry/Jerry.ai, the two Superhuman spellings).
+    """
+    return database.canon_company(name)
 
 
 def _load_config() -> dict:

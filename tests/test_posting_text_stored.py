@@ -194,3 +194,110 @@ def test_decided_rows_are_never_touched(db, monkeypatch):
     es.main(["--missing-text"])
     row = read(db)["Applied"]
     assert row["description_text"] == "" and row["lens_score"] == 20
+
+
+# --- the HTML fallback must keep only the posting ------------------------
+# A whole careers page carries the posting and every other job advertised
+# beside it. The two shapes sit in opposite places, which is the reason
+# _strip_chrome excises regions instead of truncating at the first marker:
+# Google's jobs-search list is at the TOP, before the posting, and LinkedIn's
+# "Similar jobs" rail is at the BOTTOM, after the requirements and after the
+# sponsorship and EEO text.
+GOOGLE_PAGE = (
+    "job details . arrow_back . Back to jobs search . Jobs search results "
+    "3,411 jobs matched. "
+    "AI Outcome Engineer, Forward Deployed Engineering Milan, Italy . "
+    "Group Product Manager, Finance Agent, AI Workflows San Jose, CA . "
+    "Evals Engineer, Polaris, DeepMind Mountain View, CA . "
+    "Showing 1 to 20 of 3411 rows 1-20 of 3411. navigate_next . "
+    "Equal Opportunity Google is proud to be an equal opportunity employer. "
+    + "Minimum qualifications: experience with guardrails and LLM interfaces. " * 8
+)
+
+LINKEDIN_PAGE = (
+    "About the role: you will own the platform. "
+    + "Requirements: experience shipping enterprise customers tooling. " * 8
+    + "We are an equal opportunity employer. Visa sponsorship is not available "
+      "for this role. "
+    + "Similar jobs . Product Manager, Ads Agent TikTok San Jose, CA . "
+      "People also viewed . Product Manager, Pro Fulfillment Thumbtack . "
+)
+
+
+def test_googles_leading_jobs_list_is_excised_and_the_posting_kept():
+    out = es._strip_chrome(GOOGLE_PAGE)
+    assert "forward deployed" not in out.lower()      # a job in the list
+    assert "finance agent" not in out.lower()         # another one
+    assert "evals engineer" not in out.lower()        # and another
+    assert "minimum qualifications" in out.lower()    # the posting itself
+    assert "guardrails" in out.lower()                # its real signals
+    assert "equal opportunity" in out.lower()         # and its legal text
+
+
+def test_linkedins_trailing_rail_is_removed():
+    out = es._strip_chrome(LINKEDIN_PAGE)
+    assert "ads agent" not in out.lower()
+    assert "people also viewed" not in out.lower()
+    assert "pro fulfillment" not in out.lower()
+    assert "enterprise customers" in out.lower()
+
+
+def test_the_sponsorship_sentence_survives_the_rail_being_cut():
+    """The rail sits after the sponsorship and EEO text on every LinkedIn row
+    checked, so cleaning must not cost a refusal. This is the regression that
+    matters most: losing it would turn a refusal into silence."""
+    out = es._strip_chrome(LINKEDIN_PAGE)
+    assert "visa sponsorship is not available" in out.lower()
+    assert es.classify(out)[0] == es.REFUSED
+
+
+def test_a_page_with_no_other_jobs_on_it_is_untouched():
+    body = "Senior Product Manager. You will own agent evaluation and guardrails. " * 9
+    assert es._strip_chrome(body) == body.strip()
+
+
+def test_an_unterminated_jobs_list_is_left_alone():
+    """The excision needs both ends. Without the pagination line that closes
+    Google's list there is no evidence of where the chrome stops, and removing
+    to the end of the document would take the posting with it."""
+    body = ("Back to jobs search . Jobs search results 12 jobs matched. "
+            + "Minimum qualifications: you have shipped agent tooling. " * 9)
+    out = es._strip_chrome(body)
+    assert "minimum qualifications" in out.lower()
+
+
+def test_fallback_text_is_cleaned_but_ats_text_is_not(monkeypatch):
+    """_strip_chrome runs on the fallback only: an ATS API returns one
+    posting's own description, where a phrase like "similar jobs" would be the
+    employer's own words."""
+    def fake_source(url):
+        return ("fake-api", LINKEDIN_PAGE) if url == "ats" else None
+    monkeypatch.setattr(es, "_TEXT_SOURCES", (fake_source,))
+
+    _, _, _, _, ats_text = es._fetch({"url": "ats", "id": 1})
+    assert "ads agent" in ats_text.lower()            # untouched
+
+    class FakeResp:
+        status_code = 200
+        text = LINKEDIN_PAGE
+    monkeypatch.setattr(es.requests, "get", lambda *a, **kw: FakeResp())
+    _, _, _, via, html_text = es._fetch({"url": "elsewhere", "id": 2})
+    assert via == "html"
+    assert "ads agent" not in html_text.lower()       # cleaned
+
+
+def test_a_page_that_is_all_chrome_reads_as_unread_not_silent(monkeypatch):
+    """Cleaning can leave almost nothing. The existing 400-character guard then
+    does its job: the row stays NULL and is retried, rather than being recorded
+    as a posting that mentioned none of its signals."""
+    page = ("Back to jobs search . Jobs search results 9 jobs matched. "
+            "Product Manager, Ads Agent TikTok . "
+            "Showing 1 to 9 of 9 rows . Equal opportunity employer.")
+    monkeypatch.setattr(es, "_TEXT_SOURCES", ())
+
+    class FakeResp:
+        status_code = 200
+        text = page
+    monkeypatch.setattr(es.requests, "get", lambda *a, **kw: FakeResp())
+    _, stance, _, note, text = es._fetch({"url": "u", "id": 1})
+    assert stance is None and "too thin" in note and text == ""

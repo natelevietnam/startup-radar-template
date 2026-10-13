@@ -169,6 +169,51 @@ def classify(text: str) -> tuple[str | None, str]:
     return None, ""
 
 
+# --- stripping a whole web page down to the posting on it ------------------
+# The HTML fallback strips an entire careers page, so the text it produces
+# carries the posting AND every other job title on the page. The lens then
+# keyword-matches its signals across all of it and cannot tell the job from the
+# furniture: Google's row 2209 scored 33 on "agent, forward deployed, guardrails,
+# llm" when two of the four came out of neighbouring listings —
+#
+#     "AI Outcome Engineer, Forward Deployed Engineering  Milan, Italy"
+#     "Group Product Manager, Finance Agent, AI Workflows  San Jose, CA"
+#
+# Two shapes, and they sit in opposite places, which is why this excises regions
+# rather than truncating at the first marker it finds:
+#
+#   * Google's careers pages put a jobs-SEARCH LIST at the top, before the
+#     posting — 20 of 3,411 rows, at 6% of the text, with the real requirements
+#     starting around 33%. Truncating at that marker would have thrown the
+#     posting away and kept only the list. The block is delimited, though: it
+#     runs from "Jobs search results" to the pagination line that closes it.
+#   * LinkedIn puts a "Similar jobs" / "People also viewed" rail at the END,
+#     after the requirements and after the EEO and sponsorship text (checked on
+#     six rows: the rail sits at 37-55% and every sponsorship sentence precedes
+#     it). Everything from there on goes.
+#
+# Applied only to the fallback. The ATS readers return one posting's own
+# description, and running this over them could only do harm.
+_JOB_LIST_BLOCK = re.compile(
+    r"(?is)(?:back to jobs search|jobs search results)"
+    r".*?showing\s+\d+\s+to\s+\d+\s+of\s+[\d,]+\s+rows")
+_TAIL_RAIL = re.compile(
+    r"(?is)\b(?:similar jobs|people also viewed|related jobs"
+    r"|jobs you might like|more jobs at)\b.*$")
+
+
+def _strip_chrome(text: str) -> str:
+    """Remove the other jobs listed around a posting on the same page.
+
+    Nothing here guesses where the posting starts: both patterns are anchored on
+    text the page uses to label a list of OTHER jobs. If the result comes out
+    under the 400-character guard in `_fetch`, the page was chrome almost all the
+    way down and that guard already treats it as unread rather than silent.
+    """
+    text = _JOB_LIST_BLOCK.sub(" ", text or "")
+    return _TAIL_RAIL.sub(" ", text).strip()
+
+
 # --- posting text, authoritative source first ------------------------------
 def _text_greenhouse(url: str):
     m = re.search(r"greenhouse\.io/(?:embed/job_app\?for=)?([^/?#]+)/jobs/(\d+)", url)
@@ -335,7 +380,7 @@ def _fetch(row: dict) -> tuple[dict, str | None, str, str, str]:
             resp = requests.get(url, headers=_UA, timeout=_TIMEOUT, allow_redirects=True)
             if resp.status_code != 200:
                 return row, None, "", f"HTTP {resp.status_code}", ""
-            via, text = "html", _strip_html(resp.text)
+            via, text = "html", _strip_chrome(_strip_html(resp.text))
     except Exception as exc:                       # timeout, DNS, TLS — unreadable
         return row, None, "", type(exc).__name__, ""
 

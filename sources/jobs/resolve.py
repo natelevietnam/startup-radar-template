@@ -20,6 +20,7 @@ on dead ends.
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Iterable, Optional
 from urllib.parse import urlparse
 
@@ -207,16 +208,52 @@ def resolve_pending(limit: int = 35, rank: Optional[dict] = None) -> list[dict]:
 
 
 def poll_resolved(use_cache: bool = True) -> list[dict]:
-    """Every posting on every resolved board, in job_matches row shape."""
+    """Every posting on every resolved board, in job_matches row shape.
+
+    One worker per PROVIDER, not per board. The point is not to hit any board
+    harder — _throttle still holds each host to one request per second, and
+    giving a host exactly one worker means nothing ever contends for its slot.
+    The point is that the hosts no longer queue behind each other.
+
+    Polled serially this took as long as the sum of all three hosts. On 220
+    resolved boards — 122 Ashby, 92 Greenhouse, 6 Lever — a cold run spent
+    ~220s walking a list where ~122s of it was Ashby waiting on its own rate
+    limit while Greenhouse sat idle. Now the run costs as much as the SLOWEST
+    host rather than all of them added together.
+
+    Failures are collected and written after the workers join, on the calling
+    thread: upsert_board opens its own connection, and several threads writing
+    at once is how you get "database is locked" on a run that was otherwise
+    fine. Nothing here needs the write to happen at the moment of failure.
+    """
+    boards = database.resolved_boards()
+    by_provider: dict[str, list[dict]] = {}
+    for board in boards:
+        if board["provider"] in PROVIDERS:
+            by_provider.setdefault(board["provider"], []).append(board)
+    if not by_provider:
+        return []
+
+    def drain(group: list[dict]) -> tuple[list[dict], list[tuple[dict, str]]]:
+        got: list[dict] = []
+        failed: list[tuple[dict, str]] = []
+        for board in group:
+            mod = PROVIDERS[board["provider"]]
+            try:
+                got.extend(mod.fetch_board(board["token"], board["company_name"],
+                                           use_cache=use_cache))
+            except BoardError as e:
+                failed.append((board, str(e)))
+        return got, failed
+
     rows: list[dict] = []
-    for board in database.resolved_boards():
-        mod = PROVIDERS.get(board["provider"])
-        if not mod:
-            continue
-        try:
-            rows.extend(mod.fetch_board(board["token"], board["company_name"],
-                                        use_cache=use_cache))
-        except BoardError as e:
-            database.upsert_board(board["canon"], board["company_name"],
-                                  board["provider"], board["token"], error=str(e))
+    failures: list[tuple[dict, str]] = []
+    with ThreadPoolExecutor(max_workers=len(by_provider)) as pool:
+        for got, failed in pool.map(drain, by_provider.values()):
+            rows.extend(got)
+            failures.extend(failed)
+
+    for board, err in failures:
+        database.upsert_board(board["canon"], board["company_name"],
+                              board["provider"], board["token"], error=err)
     return rows

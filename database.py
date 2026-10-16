@@ -873,6 +873,11 @@ _COMPANY_SUFFIX = re.compile(
 )
 
 
+# "PM" is an abbreviation of this role, not a different one. Anchored on word
+# boundaries so TPM, PMO and PMM — which are different roles — are untouched.
+_PM_ABBREV = re.compile(r"\bpm\b", re.IGNORECASE)
+
+
 def canon_role(role_title: str) -> str:
     """Canonical form of a role title, for same-job matching across re-posts.
 
@@ -884,6 +889,17 @@ def canon_role(role_title: str) -> str:
     openings — the opposite of the bug this guards against.
     """
     t = role_title or ""
+    # "PM" is the same job as "Product Manager", and feeds use both: HealthLeap's
+    # own board said "Technical Product Manager" while Jobright said "Technical
+    # PM", so an Applied decision on one did not cover the other. Expanded before
+    # anything else, so every later comparison sees one spelling.
+    #
+    # Word-boundary anchored, which leaves "TPM", "PMO" and "PMM" alone — those
+    # are different roles, not abbreviations of this one. Only 2 of 1,442 stored
+    # titles use the bare abbreviation, and expanding it collapses exactly two
+    # pairs, both genuinely one role (LightSource's two Senior PM rows, and the
+    # HealthLeap pair).
+    t = _PM_ABBREV.sub("product manager", t)
     # Decorations stack ("[Pipeline] PM (Remote) - San Francisco, CA"), so peel
     # until nothing more comes off rather than making a single pass.
     for _ in range(4):
@@ -964,6 +980,13 @@ _COMPANY_REBRAND = {
     # which is right for Scale AI vs Scale — but C3 is not two companies, and an
     # alias is the only thing that can say so.
     "c3 ai": "c3",
+
+    # HealthLeap, which the feeds spell two ways: Jobright said "HealthLeap AI",
+    # the company's own Ashby board says "Healthleap". The "AI" is a spaced
+    # suffix, so _COMPANY_TLD cannot touch it and the two keys stayed apart —
+    # which meant an Applied decision on 2026-09-23 did not stop the same
+    # employer's Technical PM req arriving undecided on 2026-10-12.
+    "healthleap ai": "healthleap",
 }
 
 

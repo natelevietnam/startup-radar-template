@@ -8,8 +8,10 @@ Run: `streamlit run app.py`
 
 import csv as _csv
 import json
+import os
 import re
 import subprocess
+import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -188,12 +190,111 @@ page = st.sidebar.radio(
 
 st.sidebar.divider()
 
-# Pipeline run
-if st.sidebar.button("Run pipeline now"):
-    with st.spinner("Running..."):
-        from main import run
-        run()
-    st.success("Done")
+# Pipeline run — a subprocess that logs to disk, not an in-process call.
+#
+# run() used to be invoked inline behind st.spinner("Running..."). Three things
+# were wrong with that, and they compounded:
+#
+#   * it blocked Streamlit's script thread, so the whole dashboard froze for the
+#     length of a run — which is seconds on a warm board cache and minutes on a
+#     cold one, because polling 220 ATS boards is rate-limited per host;
+#   * every line main.py prints went to the terminal that launched Streamlit,
+#     never to the browser, so the spinner carried no information at all;
+#   * and if the websocket dropped during those minutes — backgrounded tab,
+#     laptop asleep — the browser kept spinning over a process that had already
+#     finished. "Still running" and "died ten minutes ago" looked identical.
+#
+# A subprocess fixes all three. The UI stays responsive, the log is a file so it
+# survives a reload or a dropped connection, and liveness becomes a real
+# question about a real pid instead of an assumption.
+PIPELINE_LOG = PROJECT_DIR / ".cache" / "pipeline_run.log"
+PIPELINE_PID = PROJECT_DIR / ".cache" / "pipeline_run.pid"
+PIPELINE_POLL_SECONDS = 3
+
+
+def _pipeline_pid():
+    """The pid of a running pipeline, or None.
+
+    Deliberately read off disk rather than out of st.session_state: session
+    state is per-browser-session and is exactly what a reload or a dropped
+    websocket destroys. The pid file is what lets a reopened tab discover that a
+    run it never started is still going.
+    """
+    try:
+        pid = int(PIPELINE_PID.read_text().strip())
+    except (OSError, ValueError):
+        return None
+    try:
+        os.kill(pid, 0)      # signal 0 checks for existence and delivers nothing
+    except OSError:
+        return None          # gone, or not ours to signal
+    return pid
+
+
+def _pipeline_tail(lines: int = 14) -> str:
+    try:
+        return "".join(
+            PIPELINE_LOG.read_text(errors="replace").splitlines(keepends=True)[-lines:])
+    except OSError:
+        return ""
+
+
+def _start_pipeline() -> None:
+    PIPELINE_LOG.parent.mkdir(parents=True, exist_ok=True)
+    # -u because the log is the progress display: with Python buffering stdout
+    # into 8KB blocks, a run that prints steadily for two minutes shows nothing
+    # until it finishes, which is the problem this is meant to solve.
+    proc = subprocess.Popen(
+        [sys.executable or "python", "-u", "main.py"],
+        cwd=str(PROJECT_DIR),
+        stdout=open(PIPELINE_LOG, "w"), stderr=subprocess.STDOUT, text=True,
+    )
+    PIPELINE_PID.write_text(str(proc.pid))
+
+
+_pipe_pid = _pipeline_pid()
+
+# A pid file with no live process behind it means the run ended since the last
+# rerun and its outcome has not been reported yet. main.py exits non-zero on
+# source failure and prints "Done." on success, so the log's own last word is
+# the verdict — and it is readable even if this browser session never saw the
+# process at all.
+if _pipe_pid is None and PIPELINE_PID.exists():
+    _tail = _pipeline_tail(400)
+    PIPELINE_PID.unlink(missing_ok=True)
+    st.session_state["pipeline_outcome"] = "ok" if "\nDone." in _tail else "failed"
+
+if _pipe_pid:
+    st.sidebar.info(f"Pipeline running — pid {_pipe_pid}")
+    if st.sidebar.button("Stop pipeline"):
+        try:
+            os.kill(_pipe_pid, 15)
+        except OSError:
+            pass
+        PIPELINE_PID.unlink(missing_ok=True)
+        st.rerun()
+else:
+    if st.sidebar.button("Run pipeline now"):
+        _start_pipeline()
+        st.rerun()
+    _outcome = st.session_state.pop("pipeline_outcome", None)
+    if _outcome == "ok":
+        st.sidebar.success("Pipeline finished")
+    elif _outcome == "failed":
+        st.sidebar.error("Pipeline failed — see the log below")
+    if PIPELINE_LOG.exists():
+        _when = datetime.fromtimestamp(PIPELINE_LOG.stat().st_mtime)
+        st.sidebar.caption(f"Last run {_when.strftime('%b %d, %H:%M')}")
+
+if _pipe_pid or st.session_state.get("pipeline_outcome"):
+    with st.sidebar.expander("Pipeline progress", expanded=bool(_pipe_pid)):
+        st.code(_pipeline_tail() or "(waiting for output...)", language=None)
+
+if _pipe_pid:
+    # Poll rather than block. Every data read in this app is cached on the DB's
+    # mtime, so a rerun while the pipeline is mid-write is cheap until the
+    # moment it actually writes, at which point refreshing is the right thing.
+    time.sleep(PIPELINE_POLL_SECONDS)
     st.rerun()
 
 # LinkedIn upload
@@ -1521,6 +1622,3 @@ elif page == "Application Tracker":
             if _persist_tracker(_rejected_tracker, edited):
                 st.rerun()
 
-
-# Missing import for subprocess in DeepDive
-import sys

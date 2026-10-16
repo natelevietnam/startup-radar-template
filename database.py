@@ -3,7 +3,7 @@
 import difflib
 import re
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import (parse_qs, parse_qsl, urlencode, urlparse,
                           urlsplit, urlunsplit)
@@ -293,6 +293,16 @@ def init_db() -> None:
 BOARD_TTL_DAYS = 7
 
 
+def _utc_now() -> str:
+    """The same wall clock SQLite's datetime('now') writes, as a string.
+
+    ats_boards timestamps are UTC. Python's datetime.now() is local, and mixing
+    the two in one table is what made the TTL above mean something different in
+    every timezone.
+    """
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def get_board(canon_name: str) -> Optional[dict]:
     """The cached board for a canonical company name, resolved or failed."""
     conn = _connect()
@@ -331,7 +341,11 @@ def upsert_board(canon_name: str, company_name: str, provider: Optional[str],
                    attempts        = ats_boards.attempts + 1,
                    last_error      = excluded.last_error""",
             (canon_name, company_name, provider, token,
-             datetime.now().strftime("%Y-%m-%d %H:%M:%S") if provider else None,
+             # Same clock as last_attempt_at below, which SQLite writes with
+             # datetime('now') — i.e. UTC. These two columns used to be filled
+             # from different clocks in this one statement, leaving every row
+             # internally inconsistent by the local UTC offset.
+             _utc_now() if provider else None,
              error[:300]))
         conn.commit()
     finally:
@@ -388,7 +402,16 @@ def companies_needing_resolution(limit: int = 35) -> list[dict]:
     finally:
         conn.close()
 
-    cutoff = (datetime.now() - timedelta(days=BOARD_TTL_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    # UTC, because that is what upsert_board stores: last_attempt_at is written
+    # by SQLite's datetime('now'), which is UTC, while this cutoff was built
+    # from datetime.now(), which is local. West of Greenwich the stored values
+    # therefore looked newer than they were by the whole UTC offset — 7h on
+    # PDT — so a company was skipped for 7 days and 7 hours instead of 7 days,
+    # and east of Greenwich it would have been retried early. Same clock on
+    # both sides of the comparison is the only thing that makes the TTL mean
+    # what BOARD_TTL_DAYS says.
+    cutoff = (datetime.now(timezone.utc).replace(tzinfo=None)
+              - timedelta(days=BOARD_TTL_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
     out = []
     for r in rows:
         canon = canon_company(r["company_name"])

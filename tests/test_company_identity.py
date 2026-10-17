@@ -52,3 +52,23 @@ def test_the_healthleap_pair_now_shares_one_job_key():
     jobright = database._canon_job_key("HealthLeap AI", "Technical PM")
     own_board = database._canon_job_key("Healthleap", "Technical Product Manager")
     assert jobright == own_board == "healthleap|technical product manager"
+
+
+@pytest.mark.parametrize("spelling", ["Clipboard", "Clipboard Health", "clipboard",
+                                      "CLIPBOARD HEALTH", "Clipboard, Inc."])
+def test_clipboard_spellings_are_one_company(spelling):
+    """Jobright shortens Clipboard Health to "Clipboard".
+
+    Same role title, same day, and the company's own Ashby board token is
+    literally "clipboard" — so the short form is the employer's own shorthand,
+    not another business. Nate marked the Jobright copy Not Interested while the
+    Ashby copy stayed undecided: the HealthLeap failure again, a decision that
+    did not travel to the other spelling of its own employer.
+    """
+    assert database.canon_company(spelling) == "clipboard health"
+
+
+def test_the_clipboard_pair_now_shares_one_job_key():
+    jobright = database._canon_job_key("Clipboard", "Senior Product Manager")
+    own_board = database._canon_job_key("Clipboard Health", "Senior Product Manager")
+    assert jobright == own_board == "clipboard health|senior product manager"

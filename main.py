@@ -39,6 +39,55 @@ def _record(failures: list, label: str, exc: Exception) -> None:
     failures.append((label, str(exc)))
 
 
+def enrich_postings(cfg: dict) -> None:
+    """Read each undecided posting, store its text, then score what was read.
+
+    Both passes existed only as scripts a human ran by hand, which meant the cloud
+    produced rows nobody had read. On 2026-10-16 its database held 1,916 job rows
+    and exactly 4 posting bodies — all 4 from the board poller, which stores
+    descriptions at ingest. Every other row reached the board with description_text
+    empty, so job_lens scored a title and a city and said so: "No posting body
+    stored — signals could not be read" on 80 of 83 undecided rows, 40 of them
+    landing on the identical score of 20.
+
+    Order matters. The enricher stores each body and clears lens_score on the rows
+    it filled; score_lens then scores exactly those, because by default it reads
+    WHERE lens_score IS NULL. Running them the other way round scores the rows
+    before their text exists.
+
+    Capped, because this is the only step in the run that fetches one URL per row.
+    At 4 workers and a 15-second timeout, 60 postings sits well inside daily_run's
+    15-minute limit; raise `enrichment.max_postings_per_run` to clear a backlog
+    faster.
+
+    Neither pass joins `failures`: both read postings over the network, and a board
+    that scored nothing today is not a broken run. They warn, like the duplicate
+    report.
+    """
+    enrich_cfg = cfg.get("enrichment") or {}
+    if not enrich_cfg.get("enabled", True):
+        return
+    cap = int(enrich_cfg.get("max_postings_per_run", 60))
+    argv = ["--missing-text", "--limit", str(cap), "--chained"]
+    # Off by default: filing a refusal sets status on the user's board, and an
+    # unattended run should surface that decision rather than take it.
+    if enrich_cfg.get("file_refusals"):
+        argv.append("--apply")
+    print("\n[Postings] Reading bodies and sponsorship stances...")
+    try:
+        import enrich_sponsorship
+        enrich_sponsorship.main(argv)
+    except Exception as e:
+        print(f"  Posting enrichment skipped: {e}")
+    if not (cfg.get("job_matching") or {}).get("enabled"):
+        return
+    try:
+        import score_lens
+        score_lens.main([])
+    except Exception as e:
+        print(f"  Lens scoring skipped: {e}")
+
+
 def run() -> int:
     print("=" * 60)
     print("Startup Radar")
@@ -627,6 +676,9 @@ def run() -> int:
             print(f"Wrote {len(fresh)} to Google Sheet")
         except Exception as e:
             _record(failures, "Google Sheets write", e)
+
+    # --- Posting text, sponsorship stance and the lens score ---
+    enrich_postings(cfg)
 
     # --- Duplicates: one posting on the board twice ---
     # Two shapes, one report: an employer renamed between feeds (Vitalize /

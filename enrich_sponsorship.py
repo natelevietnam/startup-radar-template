@@ -42,6 +42,7 @@ Usage:
     --apply         additionally file explicit refusals as Not Interested
     --recheck       re-fetch rows already carrying a value
     --missing-text  also read rows whose stance is stored but whose body is not
+    --chained       a caller scores immediately after; drop the follow-up hint
 
 The body of every posting it reads is stored on job_matches.description_text,
 because the lens needs it and this is the only pass that fetches it. Scoring a
@@ -402,6 +403,7 @@ def main(argv: list[str]) -> int:
     apply_cuts = "--apply" in argv
     recheck = "--recheck" in argv
     missing_text = "--missing-text" in argv
+    chained = "--chained" in argv          # a caller runs score_lens next
     limit = 0
     if "--limit" in argv:
         limit = int(argv[argv.index("--limit") + 1])
@@ -479,7 +481,11 @@ def main(argv: list[str]) -> int:
         con.commit()
         print(f"  stored {len(bodies)} posting body(ies) · "
               f"{cur.rowcount} row(s) reopened for scoring")
-        print("  next: python score_lens.py   (scores the reopened rows)")
+        if not chained:
+            # Suppressed when a caller scores immediately after — main.py's
+            # pipeline step does, and printing an instruction the log has
+            # already carried out is worse than printing nothing.
+            print("  next: python score_lens.py   (scores the reopened rows)")
 
     if apply_cuts:
         # Every undecided refusal, not only the ones read on this run — the

@@ -1010,6 +1010,15 @@ _COMPANY_REBRAND = {
     # which meant an Applied decision on 2026-09-23 did not stop the same
     # employer's Technical PM req arriving undecided on 2026-10-12.
     "healthleap ai": "healthleap",
+
+    # Clipboard Health, which Jobright shortens to "Clipboard". Same role title
+    # ("Senior Product Manager"), same day, and the company's own Ashby board
+    # token is literally "clipboard" — so the short form is the employer's own
+    # shorthand, not a different business. Nate marked the Jobright copy Not
+    # Interested on 2026-10-15 while the Ashby copy stayed undecided, which is
+    # the same failure as the HealthLeap split: a decision that did not travel
+    # to the other spelling of its own employer.
+    "clipboard": "clipboard health",
 }
 
 
@@ -1034,9 +1043,27 @@ _TRACKING_PARAMS = frozenset({
 # Paths that are a company's careers *index*, not one posting. Keying on these
 # would block every future role at that employer: binti.com/careers/ already
 # carries two unrelated openings in this database.
+# A hyphen counts as a boundary as well as a slash: "open-positions",
+# "all-jobs" and "current-openings" are index pages, and requiring a slash
+# before the index word meant "/global/2026/open-positions" satisfied the
+# posting-shape test below and came back keyed. canon_url errs toward "" when
+# it cannot be sure a URL names ONE posting, so a few role slugs that happen to
+# end in "-jobs" losing their key is the right side to be wrong on — it costs a
+# dedupe signal, where the opposite collapses two real roles into one.
 _INDEX_PATH = re.compile(
-    r"(^|/)(careers?|jobs?|openings?|positions?|vacancies|join-?us)/?$", re.IGNORECASE
+    r"(^|/|-)(careers?|jobs?|openings?|positions?|vacancies|join-?us)/?$",
+    re.IGNORECASE,
 )
+
+# A final path segment that names one specific role: three or more
+# hyphen-separated words, long enough not to be a section name. Companies that
+# host their own board write exactly this —
+# hex.tech/careers/senior-product-manager-monetization- — and such a path
+# identifies one posting as surely as a numeric id does. Index paths are
+# excluded by _INDEX_PATH above before this is consulted, so widening here
+# cannot reopen the "two roles behind one /careers URL" hole.
+_ROLE_SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+){2,}-?$", re.IGNORECASE)
+_ROLE_SLUG_MIN = 15
 
 
 def canon_url(url: str) -> str:
@@ -1059,10 +1086,20 @@ def canon_url(url: str) -> str:
     if not host or _INDEX_PATH.search(path):
         return ""
     segments = [s for s in path.split("/") if s]
-    # A real posting URL carries an id or a slug deep in the path. A bare
-    # /company or / is an index by another name.
+    # A real posting URL carries an id, a slug deep in the path, or a final
+    # segment that spells out the role. A bare /company or / is an index by
+    # another name.
+    #
+    # The role-slug arm was missing, and it cost a real duplicate: Hex posts at
+    # /careers/senior-product-manager-monetization-, which is two segments with
+    # no digit in either, so this returned "" and decided_duplicate's "same
+    # posting URL" test could never fire. Two rows for that one posting sat in
+    # the DB with contradictory statuses — #1706 Applied and #2144 Not
+    # Interested — and nothing could see they were the same link.
     if not segments or not (
-        any(any(ch.isdigit() for ch in s) for s in segments) or len(segments) >= 3
+        any(any(ch.isdigit() for ch in s) for s in segments)
+        or len(segments) >= 3
+        or (len(segments[-1]) >= _ROLE_SLUG_MIN and _ROLE_SLUG.match(segments[-1]))
     ):
         return ""
     query = sorted(

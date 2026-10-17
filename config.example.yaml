@@ -370,6 +370,29 @@ sources:
 # ---------------------------------------------------------------------------
 # Where to write results
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Reading the postings themselves
+# ---------------------------------------------------------------------------
+# Runs inside the daily pipeline, after ingest: reads each undecided posting,
+# stores its body on job_matches.description_text, records the sponsorship
+# stance, then re-scores the rows whose body it just filled.
+#
+# Until this was wired in, both passes were scripts a human ran by hand, so
+# scheduled runs produced rows nobody had read — and job_lens, with no posting
+# text to match its signals against, scored a title and a city and said so.
+enrichment:
+  enabled: true
+
+  # One HTTP fetch per row, 4 at a time, 15s each. 60 keeps the step inside
+  # daily_run's 15-minute ceiling with room to spare.
+  max_postings_per_run: 60
+
+  # An explicit "we will not sponsor" is a hard exclusion, and filing it is
+  # correct — but filing sets a status on your board, so an unattended run
+  # reports the refusal instead of acting on it. Every refusal is printed
+  # either way.
+  file_refusals: false
+
 output:
   sqlite:
     enabled: true

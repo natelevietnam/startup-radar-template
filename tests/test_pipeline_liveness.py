@@ -111,3 +111,52 @@ def test_the_done_file_settles_it_without_consulting_the_pid(tmp_path):
     done.write_text("0")
     # _pipeline_pid checks PIPELINE_DONE first and returns None regardless of pid.
     assert done.exists() and done.read_text().strip() == "0"
+
+
+# --- two jobs, one copy of the machinery -----------------------------------
+#
+# The sidebar runs two subprocesses with identical liveness rules: "pipeline"
+# (main.py, which fetches from the sources) and "sync" (sync_from_cloud.py,
+# which imports what the cloud cron already found). They share _job_pid and
+# friends rather than owning a copy each, because the zombie rule above is
+# subtle enough that a second copy would drift.
+
+import pathlib
+
+
+def job_files(root: pathlib.Path, job: str):
+    """Mirror of app._job_files."""
+    cache = root / ".cache"
+    stem = "pipeline_run" if job == "pipeline" else f"{job}_run"
+    return (cache / f"{stem}.log", cache / f"{stem}.pid", cache / f"{stem}.done")
+
+
+def test_the_pipeline_keeps_its_original_filenames(tmp_path):
+    """Backwards compatibility, and it is not cosmetic.
+
+    A run started by the previous version wrote .cache/pipeline_run.{log,pid}.
+    If adding a second job had renamed those to pipeline/pipeline.log, an
+    in-flight run would have been orphaned at upgrade: no pid file where the new
+    code looks, so it reports nothing, while the old process keeps going.
+    """
+    log, pid, done = job_files(tmp_path, "pipeline")
+    assert log.name == "pipeline_run.log"
+    assert pid.name == "pipeline_run.pid"
+    assert done.name == "pipeline_run.done"
+
+
+def test_each_job_gets_its_own_files(tmp_path):
+    """Otherwise one job's exit code would be read as the other's."""
+    p = set(job_files(tmp_path, "pipeline"))
+    s = set(job_files(tmp_path, "sync"))
+    assert p.isdisjoint(s)
+    assert job_files(tmp_path, "sync")[0].name == "sync_run.log"
+
+
+def test_one_jobs_done_file_does_not_answer_for_the_other(tmp_path):
+    """The bug this shape prevents: sync finishing marks the pipeline finished."""
+    (tmp_path / ".cache").mkdir()
+    _, _, pipe_done = job_files(tmp_path, "pipeline")
+    _, _, sync_done = job_files(tmp_path, "sync")
+    sync_done.write_text("0")
+    assert sync_done.exists() and not pipe_done.exists()

@@ -191,34 +191,52 @@ page = st.sidebar.radio(
 
 st.sidebar.divider()
 
-# Pipeline run — a subprocess that logs to disk, not an in-process call.
+# Background jobs — subprocesses that log to disk, not in-process calls.
 #
 # run() used to be invoked inline behind st.spinner("Running..."). Three things
 # were wrong with that, and they compounded:
 #
 #   * it blocked Streamlit's script thread, so the whole dashboard froze for the
 #     length of a run — which is seconds on a warm board cache and minutes on a
-#     cold one, because polling 220 ATS boards is rate-limited per host;
+#     cold one, because polling 230 ATS boards is rate-limited per host;
 #   * every line main.py prints went to the terminal that launched Streamlit,
 #     never to the browser, so the spinner carried no information at all;
 #   * and if the websocket dropped during those minutes — backgrounded tab,
 #     laptop asleep — the browser kept spinning over a process that had already
 #     finished. "Still running" and "died ten minutes ago" looked identical.
 #
-# A subprocess fixes all three. The UI stays responsive, the log is a file so it
-# survives a reload or a dropped connection, and liveness becomes a real
-# question about a real pid instead of an assumption.
-PIPELINE_LOG = PROJECT_DIR / ".cache" / "pipeline_run.log"
-PIPELINE_PID = PROJECT_DIR / ".cache" / "pipeline_run.pid"
-# Written by the shell AFTER main.py returns, holding its exit code. Completion
-# is then a fact on disk rather than an inference about a pid — see
-# _pipeline_pid for why inferring it from the pid does not work.
-PIPELINE_DONE = PROJECT_DIR / ".cache" / "pipeline_run.done"
-PIPELINE_POLL_SECONDS = 3
+# TWO jobs now share this machinery rather than owning a copy each, because the
+# liveness rules below are subtle enough that a second copy would drift out of
+# step with the first:
+#
+#   pipeline — main.py, which FETCHES from the sources directly
+#   sync     — sync_from_cloud.py, which IMPORTS what the cloud cron already
+#              found and merges it, applying local tombstones and decisions
+#
+# They stay separate buttons on purpose. They have different failure domains:
+# sync needs `gh` authenticated and GitHub reachable, the pipeline needs the
+# source APIs reachable. One button for both would mean a GitHub auth problem
+# failing the local ingest, and a DNS outage taking down the sync with it.
+JOBS = {
+    "pipeline": {"script": "main.py",
+                 "noun": "Pipeline",
+                 "button": "Run pipeline now"},
+    "sync":     {"script": "sync_from_cloud.py",
+                 "noun": "Cloud sync",
+                 "button": "Sync from cloud"},
+}
+POLL_SECONDS = 3
 
 
-def _pipeline_pid():
-    """The pid of a RUNNING pipeline, or None.
+def _job_files(job: str):
+    """(log, pid, done) for a job. The pipeline keeps its original filenames."""
+    cache = PROJECT_DIR / ".cache"
+    stem = "pipeline_run" if job == "pipeline" else f"{job}_run"
+    return (cache / f"{stem}.log", cache / f"{stem}.pid", cache / f"{stem}.done")
+
+
+def _job_pid(job: str):
+    """The pid of a RUNNING job, or None.
 
     Read off disk rather than out of st.session_state, because session state is
     per-browser-session and is exactly what a reload or a dropped websocket
@@ -235,10 +253,11 @@ def _pipeline_pid():
     was written to fix, wearing a different hat. `ps` showed it plainly:
     "9551 <defunct>".
     """
-    if PIPELINE_DONE.exists():
+    _log, pidf, done = _job_files(job)
+    if done.exists():
         return None
     try:
-        pid = int(PIPELINE_PID.read_text().strip())
+        pid = int(pidf.read_text().strip())
     except (OSError, ValueError):
         return None
     if _is_zombie(pid):
@@ -269,76 +288,93 @@ def _reap(pid: int) -> None:
         pass                 # not our child, or already reaped
 
 
-def _pipeline_tail(lines: int = 14) -> str:
+def _job_tail(job: str, lines: int = 14) -> str:
+    log, _pid, _done = _job_files(job)
     try:
-        return "".join(
-            PIPELINE_LOG.read_text(errors="replace").splitlines(keepends=True)[-lines:])
+        return "".join(log.read_text(errors="replace").splitlines(keepends=True)[-lines:])
     except OSError:
         return ""
 
 
-def _start_pipeline() -> None:
-    PIPELINE_LOG.parent.mkdir(parents=True, exist_ok=True)
-    PIPELINE_DONE.unlink(missing_ok=True)
-    # Run under a shell so the exit code can be recorded the instant main.py
-    # returns. -u because the log is the progress display: with Python
-    # buffering stdout into 8KB blocks, a run that prints steadily for two
-    # minutes shows nothing until it finishes, which is the problem this is
-    # meant to solve.
-    cmd = "{py} -u main.py; printf %s $? > {done}".format(
+def _start_job(job: str) -> None:
+    log, pidf, done = _job_files(job)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    done.unlink(missing_ok=True)
+    # Run under a shell so the exit code is recorded the instant the script
+    # returns. -u because the log IS the progress display: with Python
+    # buffering stdout into 8KB blocks, a job that prints steadily for two
+    # minutes shows nothing until it finishes, which is what this exists to fix.
+    cmd = "{py} -u {script}; printf %s $? > {done}".format(
         py=shlex.quote(sys.executable or "python"),
-        done=shlex.quote(str(PIPELINE_DONE)))
+        script=shlex.quote(JOBS[job]["script"]),
+        done=shlex.quote(str(done)))
     proc = subprocess.Popen(
         ["/bin/sh", "-c", cmd],
         cwd=str(PROJECT_DIR),
-        stdout=open(PIPELINE_LOG, "w"), stderr=subprocess.STDOUT, text=True,
+        stdout=open(log, "w"), stderr=subprocess.STDOUT, text=True,
     )
-    PIPELINE_PID.write_text(str(proc.pid))
+    pidf.write_text(str(proc.pid))
 
 
-_pipe_pid = _pipeline_pid()
+def _render_job(job: str, busy_elsewhere: bool):
+    """Draw one job's control, and return its pid if it is running."""
+    spec = JOBS[job]
+    log, pidf, done = _job_files(job)
+    pid = _job_pid(job)
 
-# A pid file with no live process behind it means the run ended since the last
-# rerun and its outcome has not been reported yet. main.py exits non-zero on
-# source failure and prints "Done." on success, so the log's own last word is
-# the verdict — and it is readable even if this browser session never saw the
-# process at all.
-if _pipe_pid is None and PIPELINE_PID.exists():
-    # The run ended since the last rerun and its outcome has not been reported.
-    # Prefer the recorded exit code; fall back to the log's last word for a run
-    # started before the exit code was being written.
-    try:
-        _rc = int(PIPELINE_DONE.read_text().strip())
-    except (OSError, ValueError):
-        _rc = 0 if "\nDone." in _pipeline_tail(400) else 1
-    PIPELINE_PID.unlink(missing_ok=True)
-    st.session_state["pipeline_outcome"] = "ok" if _rc == 0 else "failed"
-
-if _pipe_pid:
-    st.sidebar.info(f"Pipeline running — pid {_pipe_pid}")
-    if st.sidebar.button("Stop pipeline"):
+    # A pid file with no live process behind it means the job ended since the
+    # last rerun and its outcome has not been reported. The recorded exit code
+    # is the verdict; the log's last word is only a fallback for a run started
+    # before exit codes were written.
+    if pid is None and pidf.exists():
         try:
-            os.kill(_pipe_pid, 15)
-        except OSError:
-            pass
-        PIPELINE_PID.unlink(missing_ok=True)
-        st.rerun()
-else:
-    if st.sidebar.button("Run pipeline now"):
-        _start_pipeline()
-        st.rerun()
-    _outcome = st.session_state.pop("pipeline_outcome", None)
-    if _outcome == "ok":
-        st.sidebar.success("Pipeline finished")
-    elif _outcome == "failed":
-        st.sidebar.error("Pipeline failed — see the log below")
-    if PIPELINE_LOG.exists():
-        _when = datetime.fromtimestamp(PIPELINE_LOG.stat().st_mtime)
-        st.sidebar.caption(f"Last run {_when.strftime('%b %d, %H:%M')}")
+            rc = int(done.read_text().strip())
+        except (OSError, ValueError):
+            rc = 0 if "\nDone." in _job_tail(job, 400) else 1
+        pidf.unlink(missing_ok=True)
+        st.session_state[f"{job}_outcome"] = "ok" if rc == 0 else "failed"
 
-if _pipe_pid or st.session_state.get("pipeline_outcome"):
-    with st.sidebar.expander("Pipeline progress", expanded=bool(_pipe_pid)):
-        st.code(_pipeline_tail() or "(waiting for output...)", language=None)
+    if pid:
+        st.sidebar.info(f"{spec['noun']} running — pid {pid}")
+        if st.sidebar.button(f"Stop {job}", key=f"stop_{job}"):
+            try:
+                os.kill(pid, 15)
+            except OSError:
+                pass
+            pidf.unlink(missing_ok=True)
+            st.rerun()
+    else:
+        if st.sidebar.button(spec["button"], key=f"run_{job}",
+                             disabled=busy_elsewhere):
+            _start_job(job)
+            st.rerun()
+        outcome = st.session_state.pop(f"{job}_outcome", None)
+        if outcome == "ok":
+            st.sidebar.success(f"{spec['noun']} finished")
+        elif outcome == "failed":
+            st.sidebar.error(f"{spec['noun']} failed — see the log below")
+        if log.exists():
+            when = datetime.fromtimestamp(log.stat().st_mtime)
+            st.sidebar.caption(f"Last run {when.strftime('%b %d, %H:%M')}")
+
+    if pid or st.session_state.get(f"{job}_outcome"):
+        with st.sidebar.expander(f"{spec['noun']} progress", expanded=bool(pid)):
+            st.code(_job_tail(job) or "(waiting for output...)", language=None)
+    return pid
+
+
+# Sync first, then the pipeline — the order the sidebar suggests by its layout.
+# Syncing first means the pipeline's own enrichment and lens-scoring steps, which
+# run at the END of main.py, pick up the rows the cloud found in the SAME pass
+# instead of leaving them unread until tomorrow. Either order is safe, because
+# both sides dedupe against the local DB; this one just does more per click.
+#
+# Only one at a time: both write job_matches, and two SQLite writers on one file
+# is how you get "database is locked" halfway through an otherwise fine run.
+_sync_pid = _job_pid("sync")
+_pipe_pid = _job_pid("pipeline")
+_sync_pid = _render_job("sync", busy_elsewhere=bool(_pipe_pid))
+_pipe_pid = _render_job("pipeline", busy_elsewhere=bool(_sync_pid))
 
 
 # LinkedIn upload
@@ -1681,6 +1717,6 @@ elif page == "Application Tracker":
 # Polling is still the right shape — every data read here is cached on the DB's
 # mtime, so a rerun mid-run is cheap until the pipeline actually writes — but it
 # has to happen after the user has something to look at.
-if _pipeline_pid():
-    time.sleep(PIPELINE_POLL_SECONDS)
+if _job_pid("pipeline") or _job_pid("sync"):
+    time.sleep(POLL_SECONDS)
     st.rerun()

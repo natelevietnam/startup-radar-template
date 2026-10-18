@@ -10,6 +10,7 @@ import csv as _csv
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -209,26 +210,63 @@ st.sidebar.divider()
 # question about a real pid instead of an assumption.
 PIPELINE_LOG = PROJECT_DIR / ".cache" / "pipeline_run.log"
 PIPELINE_PID = PROJECT_DIR / ".cache" / "pipeline_run.pid"
+# Written by the shell AFTER main.py returns, holding its exit code. Completion
+# is then a fact on disk rather than an inference about a pid — see
+# _pipeline_pid for why inferring it from the pid does not work.
+PIPELINE_DONE = PROJECT_DIR / ".cache" / "pipeline_run.done"
 PIPELINE_POLL_SECONDS = 3
 
 
 def _pipeline_pid():
-    """The pid of a running pipeline, or None.
+    """The pid of a RUNNING pipeline, or None.
 
-    Deliberately read off disk rather than out of st.session_state: session
-    state is per-browser-session and is exactly what a reload or a dropped
-    websocket destroys. The pid file is what lets a reopened tab discover that a
-    run it never started is still going.
+    Read off disk rather than out of st.session_state, because session state is
+    per-browser-session and is exactly what a reload or a dropped websocket
+    destroys. The pid file is what lets a reopened tab discover a run it never
+    started.
+
+    The exit-code file is checked FIRST, and the pid is only a fallback, because
+    a pid alone cannot answer this question. Nothing in a Streamlit rerun ever
+    calls wait() on the child — the Popen handle is dropped on purpose so that
+    liveness survives losing session state — so when the run finishes the child
+    is never reaped and sits in the process table as a ZOMBIE. os.kill(pid, 0)
+    succeeds on a zombie: the pid still exists. The first version of this check
+    therefore reported a finished run as running forever, which is the bug it
+    was written to fix, wearing a different hat. `ps` showed it plainly:
+    "9551 <defunct>".
     """
+    if PIPELINE_DONE.exists():
+        return None
     try:
         pid = int(PIPELINE_PID.read_text().strip())
     except (OSError, ValueError):
+        return None
+    if _is_zombie(pid):
+        _reap(pid)
         return None
     try:
         os.kill(pid, 0)      # signal 0 checks for existence and delivers nothing
     except OSError:
         return None          # gone, or not ours to signal
     return pid
+
+
+def _is_zombie(pid: int) -> bool:
+    """Is this pid a finished child nobody has reaped?"""
+    try:
+        out = subprocess.run(["ps", "-o", "state=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False         # cannot tell; fall through to the signal check
+    return out.upper().startswith("Z")
+
+
+def _reap(pid: int) -> None:
+    """Clear the zombie if it is ours, so the process table does not fill up."""
+    try:
+        os.waitpid(pid, os.WNOHANG)
+    except (ChildProcessError, OSError):
+        pass                 # not our child, or already reaped
 
 
 def _pipeline_tail(lines: int = 14) -> str:
@@ -241,11 +279,17 @@ def _pipeline_tail(lines: int = 14) -> str:
 
 def _start_pipeline() -> None:
     PIPELINE_LOG.parent.mkdir(parents=True, exist_ok=True)
-    # -u because the log is the progress display: with Python buffering stdout
-    # into 8KB blocks, a run that prints steadily for two minutes shows nothing
-    # until it finishes, which is the problem this is meant to solve.
+    PIPELINE_DONE.unlink(missing_ok=True)
+    # Run under a shell so the exit code can be recorded the instant main.py
+    # returns. -u because the log is the progress display: with Python
+    # buffering stdout into 8KB blocks, a run that prints steadily for two
+    # minutes shows nothing until it finishes, which is the problem this is
+    # meant to solve.
+    cmd = "{py} -u main.py; printf %s $? > {done}".format(
+        py=shlex.quote(sys.executable or "python"),
+        done=shlex.quote(str(PIPELINE_DONE)))
     proc = subprocess.Popen(
-        [sys.executable or "python", "-u", "main.py"],
+        ["/bin/sh", "-c", cmd],
         cwd=str(PROJECT_DIR),
         stdout=open(PIPELINE_LOG, "w"), stderr=subprocess.STDOUT, text=True,
     )
@@ -260,9 +304,15 @@ _pipe_pid = _pipeline_pid()
 # the verdict — and it is readable even if this browser session never saw the
 # process at all.
 if _pipe_pid is None and PIPELINE_PID.exists():
-    _tail = _pipeline_tail(400)
+    # The run ended since the last rerun and its outcome has not been reported.
+    # Prefer the recorded exit code; fall back to the log's last word for a run
+    # started before the exit code was being written.
+    try:
+        _rc = int(PIPELINE_DONE.read_text().strip())
+    except (OSError, ValueError):
+        _rc = 0 if "\nDone." in _pipeline_tail(400) else 1
     PIPELINE_PID.unlink(missing_ok=True)
-    st.session_state["pipeline_outcome"] = "ok" if "\nDone." in _tail else "failed"
+    st.session_state["pipeline_outcome"] = "ok" if _rc == 0 else "failed"
 
 if _pipe_pid:
     st.sidebar.info(f"Pipeline running — pid {_pipe_pid}")
@@ -290,12 +340,6 @@ if _pipe_pid or st.session_state.get("pipeline_outcome"):
     with st.sidebar.expander("Pipeline progress", expanded=bool(_pipe_pid)):
         st.code(_pipeline_tail() or "(waiting for output...)", language=None)
 
-if _pipe_pid:
-    # Poll rather than block. Every data read in this app is cached on the DB's
-    # mtime, so a rerun while the pipeline is mid-write is cheap until the
-    # moment it actually writes, at which point refreshing is the right thing.
-    time.sleep(PIPELINE_POLL_SECONDS)
-    st.rerun()
 
 # LinkedIn upload
 st.sidebar.markdown("**LinkedIn Connections**")
@@ -1622,3 +1666,21 @@ elif page == "Application Tracker":
             if _persist_tracker(_rejected_tracker, edited):
                 st.rerun()
 
+
+
+
+# Auto-refresh while the pipeline runs — LAST, after the whole page has
+# rendered.
+#
+# This used to sit in the sidebar block, 300 lines above the page body. Every
+# poll therefore re-ran the script, hit st.rerun() before reaching any of the
+# page content, and started over: the sidebar drew, the body never did. The
+# dashboard was blank for as long as a run lasted, and because the liveness
+# check above was fooled by a zombie, "as long as a run lasted" meant forever.
+#
+# Polling is still the right shape — every data read here is cached on the DB's
+# mtime, so a rerun mid-run is cheap until the pipeline actually writes — but it
+# has to happen after the user has something to look at.
+if _pipeline_pid():
+    time.sleep(PIPELINE_POLL_SECONDS)
+    st.rerun()

@@ -292,6 +292,19 @@ def init_db() -> None:
 # mostly about eventually retrying the ones that failed.
 BOARD_TTL_DAYS = 7
 
+# Consecutive failed resolution attempts after which a company stops being
+# re-attempted. Without this the queue never drains: 776 companies were pending
+# against a cap of 35 per run and a 7-day retry, so every run spent ~65s of a
+# 216s runtime re-attempting companies that had already failed and would fail
+# again — 24 of 35 attempts in one measured run found no board at all. Those
+# requests produce nothing.
+#
+# A retired company is NOT forgotten, only left alone: its row keeps the error
+# and the strike count, so `UPDATE ats_boards SET attempts = 0 WHERE canon = ?`
+# puts it back in the queue. That matters, because a company with no ATS board
+# today may adopt one next year and nothing here will notice on its own.
+BOARD_MAX_ATTEMPTS = 3
+
 
 def _utc_now() -> str:
     """The same wall clock SQLite's datetime('now') writes, as a string.
@@ -352,6 +365,31 @@ def upsert_board(canon_name: str, company_name: str, provider: Optional[str],
         conn.close()
 
 
+def retire_board(canon_name: str, reason: str) -> bool:
+    """Stop polling and stop re-resolving one company's board.
+
+    Clearing `provider` is what takes it out of resolved_boards(), and hence out
+    of the polling pass; pinning `attempts` at the strike limit is what keeps
+    companies_needing_resolution from picking it straight back up. Deleting the
+    row would do neither — with no row at all the company looks brand new and
+    gets re-resolved on the next run.
+
+    Returns False when there was no board to retire.
+    """
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            """UPDATE ats_boards
+                  SET provider = NULL, token = NULL,
+                      attempts = MAX(attempts, ?), last_error = ?
+                WHERE canon = ?""",
+            (BOARD_MAX_ATTEMPTS, f"retired: {reason}"[:300], canon_name))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def resolved_boards() -> list[dict]:
     """Every company with a usable board, for the polling pass."""
     conn = _connect()
@@ -398,7 +436,8 @@ def companies_needing_resolution(limit: int = 35) -> list[dict]:
              GROUP BY LOWER(TRIM(company_name))
             """).fetchall()
         boards = {r["canon"]: r for r in conn.execute(
-            "SELECT canon, last_attempt_at FROM ats_boards").fetchall()}
+            "SELECT canon, last_attempt_at, provider, attempts "
+            "FROM ats_boards").fetchall()}
     finally:
         conn.close()
 
@@ -419,6 +458,12 @@ def companies_needing_resolution(limit: int = 35) -> list[dict]:
             continue
         seen = boards.get(canon)
         if seen and (seen["last_attempt_at"] or "") > cutoff:
+            continue
+        # Struck out: tried BOARD_MAX_ATTEMPTS times, never found a board. Only
+        # applies to companies still UNRESOLVED — a company with a working
+        # board accrues attempts too (poll_resolved records its errors on the
+        # same row), and retiring those would stop polling boards that work.
+        if seen and seen["provider"] is None and (seen["attempts"] or 0) >= BOARD_MAX_ATTEMPTS:
             continue
         out.append({"canon": canon, "company_name": r["company_name"],
                     "website": r["website"], "last_seen": r["last_seen"]})

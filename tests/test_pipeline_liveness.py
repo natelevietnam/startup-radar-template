@@ -160,3 +160,73 @@ def test_one_jobs_done_file_does_not_answer_for_the_other(tmp_path):
     _, _, sync_done = job_files(tmp_path, "sync")
     sync_done.write_text("0")
     assert sync_done.exists() and not pipe_done.exists()
+
+
+# --- the outcome must outlive the browser session ---------------------------
+#
+# The first version stored each job's verdict in st.session_state and POPPED it
+# on display. That made it visible exactly once, to exactly one browser session,
+# and only if that session was connected at the moment the job ended. A sync
+# that finished while the tab was closed reported nothing: the sidebar still
+# read "running" on the next visit, over a job that had been done for six
+# minutes. Reading it from the exit-code file instead gives every session the
+# same answer at any time, and _start_job deletes that file when the next run
+# begins, so "the last outcome" cannot go stale.
+
+
+def job_outcome(root: pathlib.Path, job: str):
+    """Mirror of app._job_outcome."""
+    _log, _pid, done = job_files(root, job)
+    try:
+        return int(done.read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+@pytest.mark.parametrize("job", ["pipeline", "sync"])
+def test_both_jobs_report_an_outcome(job, tmp_path):
+    """The renderer is shared, so neither job can report and the other not."""
+    (tmp_path / ".cache").mkdir(exist_ok=True)
+    _l, _p, done = job_files(tmp_path, job)
+    done.write_text("0")
+    assert job_outcome(tmp_path, job) == 0
+
+
+@pytest.mark.parametrize("rc,expected", [("0", 0), ("1", 1), ("2", 2)])
+def test_the_exit_code_is_the_verdict(rc, expected, tmp_path):
+    (tmp_path / ".cache").mkdir(exist_ok=True)
+    _l, _p, done = job_files(tmp_path, "sync")
+    done.write_text(rc)
+    assert job_outcome(tmp_path, "sync") == expected
+
+
+def test_the_outcome_survives_being_read_twice(tmp_path):
+    """It was popped before, so a reload lost it. It must not be consumed."""
+    (tmp_path / ".cache").mkdir(exist_ok=True)
+    _l, _p, done = job_files(tmp_path, "sync")
+    done.write_text("0")
+    assert job_outcome(tmp_path, "sync") == 0
+    assert job_outcome(tmp_path, "sync") == 0, "reading the outcome must not clear it"
+
+
+def test_no_outcome_before_a_job_has_ever_run(tmp_path):
+    (tmp_path / ".cache").mkdir(exist_ok=True)
+    assert job_outcome(tmp_path, "pipeline") is None
+
+
+def test_starting_a_run_clears_the_previous_outcome(tmp_path):
+    """Otherwise a running job would show the last run's verdict beside it."""
+    (tmp_path / ".cache").mkdir(exist_ok=True)
+    _l, _p, done = job_files(tmp_path, "pipeline")
+    done.write_text("1")
+    assert job_outcome(tmp_path, "pipeline") == 1
+    done.unlink(missing_ok=True)          # what _start_job does
+    assert job_outcome(tmp_path, "pipeline") is None
+
+
+def test_one_jobs_outcome_is_not_the_others(tmp_path):
+    (tmp_path / ".cache").mkdir(exist_ok=True)
+    _l, _p, sync_done = job_files(tmp_path, "sync")
+    sync_done.write_text("0")
+    assert job_outcome(tmp_path, "sync") == 0
+    assert job_outcome(tmp_path, "pipeline") is None

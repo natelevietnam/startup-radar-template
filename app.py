@@ -316,23 +316,62 @@ def _start_job(job: str) -> None:
     pidf.write_text(str(proc.pid))
 
 
+def _job_outcome(job: str):
+    """How the last finished run ended: (exit_code, when), or None.
+
+    Read from disk, NOT from st.session_state, and this is the whole point. The
+    first version stored the verdict in session state and popped it on display,
+    so it was shown exactly once, to exactly one browser session, and only if
+    that session happened to be connected at the moment the job ended. A sync
+    that finished while the tab was closed reported nothing at all — the sidebar
+    still read "running" on the next visit, over a job that had been done for
+    six minutes.
+
+    The exit-code file is already the record of completion, and _start_job
+    deletes it when the next run begins, so "the last run's outcome" is simply
+    whatever that file says right now. Any session, any time, same answer.
+    """
+    log, _pidf, done = _job_files(job)
+    try:
+        rc = int(done.read_text().strip())
+    except (OSError, ValueError):
+        return None
+    try:
+        when = datetime.fromtimestamp(done.stat().st_mtime)
+    except OSError:
+        when = None
+    return rc, when
+
+
+# The line each job prints that actually says what it did, so the sidebar can
+# show the result rather than only the fact of finishing.
+_JOB_RESULT_HINT = {
+    "sync": "job_matches:",
+    "pipeline": "Added",
+}
+
+
+def _job_result_line(job: str) -> str:
+    hint = _JOB_RESULT_HINT.get(job)
+    if not hint:
+        return ""
+    for line in reversed(_job_tail(job, 400).splitlines()):
+        if hint in line:
+            return line.strip()
+    return ""
+
+
 def _render_job(job: str, busy_elsewhere: bool):
     """Draw one job's control, and return its pid if it is running."""
     spec = JOBS[job]
     log, pidf, done = _job_files(job)
     pid = _job_pid(job)
 
-    # A pid file with no live process behind it means the job ended since the
-    # last rerun and its outcome has not been reported. The recorded exit code
-    # is the verdict; the log's last word is only a fallback for a run started
-    # before exit codes were written.
+    # A pid file with no live process behind it is just litter now that the
+    # outcome is read from the exit-code file. Clear it so a stale pid cannot
+    # be mistaken for a live one if the done file is ever lost.
     if pid is None and pidf.exists():
-        try:
-            rc = int(done.read_text().strip())
-        except (OSError, ValueError):
-            rc = 0 if "\nDone." in _job_tail(job, 400) else 1
         pidf.unlink(missing_ok=True)
-        st.session_state[f"{job}_outcome"] = "ok" if rc == 0 else "failed"
 
     if pid:
         st.sidebar.info(f"{spec['noun']} running — pid {pid}")
@@ -348,16 +387,25 @@ def _render_job(job: str, busy_elsewhere: bool):
                              disabled=busy_elsewhere):
             _start_job(job)
             st.rerun()
-        outcome = st.session_state.pop(f"{job}_outcome", None)
-        if outcome == "ok":
-            st.sidebar.success(f"{spec['noun']} finished")
-        elif outcome == "failed":
-            st.sidebar.error(f"{spec['noun']} failed — see the log below")
-        if log.exists():
+        outcome = _job_outcome(job)
+        if outcome:
+            rc, when = outcome
+            stamp = f" · {when.strftime('%b %d, %H:%M')}" if when else ""
+            if rc == 0:
+                st.sidebar.success(f"{spec['noun']} finished{stamp}")
+                result = _job_result_line(job)
+                if result:
+                    st.sidebar.caption(result)
+            else:
+                st.sidebar.error(f"{spec['noun']} failed{stamp} — see the log below")
+        elif log.exists():
             when = datetime.fromtimestamp(log.stat().st_mtime)
             st.sidebar.caption(f"Last run {when.strftime('%b %d, %H:%M')}")
 
-    if pid or st.session_state.get(f"{job}_outcome"):
+    # Show the log whenever there is one to show: while running, and afterwards
+    # for whatever the last run was. Previously this was gated on a session-state
+    # flag, so the log vanished on reload exactly when you wanted to read it.
+    if pid or _job_outcome(job):
         with st.sidebar.expander(f"{spec['noun']} progress", expanded=bool(pid)):
             st.code(_job_tail(job) or "(waiting for output...)", language=None)
     return pid

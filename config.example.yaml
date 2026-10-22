@@ -393,6 +393,53 @@ enrichment:
   # either way.
   file_refusals: false
 
+# How the PM-Fit artifact is RANKED. A second axis, never a gate: nothing here
+# can cut a row or change a status, it only decides what sorts to the top of
+# the artifact. The research score in fit_dossiers.json is the other axis and
+# still shown — that one says how good the company is (team, funding, comp,
+# sponsorship evidence); this one says how well its open roles match the
+# criteria set on 2026-10-22:
+#
+#   Stage      Public or Series C+        Customers  B2B, Enterprise
+#   Role       PM or Sr PM, IC           Domains    AI/LLMs, AI eval & quality,
+#   Location   SF / Bay Area / remote               AI agents, workflow
+#   Industry   Fintech, Enterprise SaaS,            automation, API integrations
+#              Healthtech
+#
+# Components and ceilings live in fit_criteria.py (stage 20, role 25, role type
+# 15, customers 10, domains 20, industry 10 — summing to 100). The vocabularies
+# below override the shipped defaults; every key is optional, and an absent key
+# means "use the default in fit_criteria.py". Only put a list here when you
+# want to change the judgement, because a copy that merely repeats the default
+# is one more place to drift.
+fit_ranking:
+  # Employers to treat as public when no source says so. Keep this SHORT and
+  # restricted to hard, stable facts: a company that is listed on an exchange
+  # stays listed. Everything else — which round a private company is on —
+  # belongs in its dossier snapshot, where it is dated, sourced and visible,
+  # rather than here where it would silently outrank the research.
+  #
+  # Thirteen companies currently score "stage not read", which is the honest
+  # answer for most of them: their dossiers describe the role in detail and
+  # never state a round. Only the two below are listed companies.
+  public_companies:
+    - "NVIDIA"       # NASDAQ: NVDA
+    - "Robinhood"    # NASDAQ: HOOD
+
+  # Optional vocabulary overrides, all unset by default. The shipped values are
+  # in fit_criteria.py next to the reasoning for each one:
+  #
+  #   stage_full / stage_mid / stage_early
+  #   role_ideal / role_senior_ic / role_adjacent / role_manager_level
+  #   role_junior / role_off_shape
+  #   manager_signals / ic_signals
+  #   b2b_signals / consumer_signals
+  #   industry_neutral / industry_consumer
+  #
+  # `domains` and `industry_target` are maps, not lists:
+  #   domains:         {label: [weight, [phrase, ...]]}
+  #   industry_target: {label: [phrase, ...]}
+
 output:
   sqlite:
     enabled: true

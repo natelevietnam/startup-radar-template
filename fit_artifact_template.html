@@ -27,6 +27,13 @@
   .crit{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:22px}
   @media(max-width:720px){.crit{grid-template-columns:1fr}}
   .crit .box{background:var(--ground);border:1px solid var(--hair);border-radius:10px;padding:14px 16px}
+  .crit .box.rk{grid-column:1/-1;background:var(--brand-soft);border-color:color-mix(in srgb,var(--brand) 22%,transparent)}
+  .critgrid{display:grid;grid-template-columns:1fr 1fr;gap:7px 20px;font-size:12.5px;color:var(--muted)}
+  @media(max-width:720px){.critgrid{grid-template-columns:1fr}}
+  .critgrid b{color:var(--ink);font-weight:600}
+  .critgrid .ck{font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.08em;
+    color:var(--brand);display:inline-block;min-width:74px}
+  .rknote{margin:11px 0 0;font-size:12px;color:var(--muted);max-width:92ch}
   .crit h3{font-size:12px;margin:0 0 10px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.1em}
   .crit.db h3{color:var(--t-pass)} .crit.mh h3{color:var(--t-strong)}
   .chiplist{display:flex;flex-wrap:wrap;gap:6px}
@@ -56,6 +63,12 @@
     padding:6px 11px;border-radius:7px;border:1px solid var(--hair);background:#fff;color:var(--muted);cursor:pointer}
   .fbtn[aria-pressed="true"]{background:var(--ink);color:#fff;border-color:var(--ink)}
   .fbtn:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+  .sortrow{display:flex;align-items:center;gap:6px}
+  .slbl{font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint)}
+  .sbtn{font-family:var(--mono);font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;
+    padding:6px 11px;border-radius:7px;border:1px solid var(--brand);background:#fff;color:var(--brand);cursor:pointer}
+  .sbtn[aria-pressed="true"]{background:var(--brand);color:#fff}
+  .sbtn:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
   #q{margin-left:auto;flex:1;min-width:180px;max-width:300px;padding:7px 11px;border:1px solid var(--hair);
     border-radius:7px;font-size:13px;font-family:var(--sans);background:#fff}
   #q:focus-visible{outline:2px solid var(--brand);outline-offset:1px}
@@ -63,7 +76,14 @@
 
   /* master table */
   .tablewrap{overflow-x:auto;border:1px solid var(--hair);border-radius:10px;background:var(--surface)}
-  table.master{border-collapse:collapse;width:100%;font-size:13px;min-width:680px}
+  /* The wrapper scrolls horizontally, so min-width is what stops the columns
+     crushing each other. 680px was already tight for nine columns; adding the
+     criteria column collapsed the headline cell to about 30px and stretched
+     every row to a dozen wrapped lines. Sized so all ten columns keep a usable
+     width and the table scrolls instead. */
+  table.master{border-collapse:collapse;width:100%;font-size:13px;min-width:1080px}
+  table.master td:last-child,table.master th:last-child{min-width:260px}
+  table.master td.co{min-width:120px}
   table.master th,table.master td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--hair);vertical-align:middle}
   table.master th{font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint);font-weight:600}
   table.master tr:last-child td{border-bottom:none}
@@ -77,6 +97,22 @@
   /* eligibility gates — a second axis alongside the fit score */
   .gpip{font-family:var(--mono);font-weight:700;font-size:13px;cursor:help}
   table.master td.gt{white-space:nowrap;letter-spacing:3px}
+  table.master td.cr{font-family:var(--mono);font-weight:600;width:46px;text-align:right}
+  /* criteria fit — the second ranking axis, broken down per component so a
+     number nobody can audit does not end up quietly mistrusted */
+  .critbox{margin-top:11px;border:1px solid var(--hair);border-radius:10px;overflow:hidden}
+  .crithead{display:flex;align-items:baseline;gap:8px;padding:8px 11px;background:var(--nu-bg);
+    font-size:12.5px;color:var(--nu-tx)}
+  .crithead b{font-family:var(--mono);font-size:14px}
+  .crithead .cro{color:var(--muted);font-size:12px}
+  .critrow{display:grid;grid-template-columns:96px 52px 1fr;gap:10px;padding:6px 11px;font-size:12.5px;
+    border-top:1px solid var(--hair);align-items:baseline}
+  .critrow .ck{font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--faint)}
+  .critrow .cp{font-family:var(--mono);font-weight:600;font-variant-numeric:tabular-nums}
+  .critrow .cw{color:var(--muted)}
+  .critrow.miss .cw{color:var(--t-pass)}
+  .critrow.unread .cw{font-style:italic}
+  @media (max-width:620px){.critrow{grid-template-columns:84px 46px 1fr;gap:7px}}
   .fbtn.gate{border-color:color-mix(in srgb,var(--brand) 35%,transparent)}
   .gatebar{display:flex;flex-wrap:wrap;align-items:center;gap:5px 12px;margin-top:7px}
   .gatebar .gstat{font-family:var(--mono);font-size:10.5px;font-weight:700;letter-spacing:.05em;
@@ -170,10 +206,11 @@
   <div class="wrap">
     <div class="eyebrow">Career-fit triage · Product Management</div>
     <h1>PM Fit — Your Job Matches</h1>
-    <p class="sub">Live view of your <b>Startup Radar — Uncategorized Job Matches</b>, scored against your deal-breakers and must-haves: founder/operating style, likely hiring manager, and public signal per company. Regenerates from your pipeline each time you open the dashboard.</p>
+    <p class="sub">Live view of your <b>Startup Radar — Uncategorized Job Matches</b>, on two axes. <b>Criteria fit</b> scores each open role against the criteria below — stage, role shape, IC, customers, domain, industry — and is what the board sorts by. <b>Research</b> is the dossier read on the company: founder and operating style, likely hiring manager, comp and sponsorship evidence. They disagree often, and the disagreement is the useful part. Regenerates from your pipeline each time you open the dashboard.</p>
     <div class="meta-row">
       <span>Generated <b>{{GENERATED_AT}}</b> from your local DB</span>
       <span>{{COUNTS}}</span>
+      <span>Sorted by <b>criteria fit</b>; blocked and deprioritized companies sink</span>
       <span>Scores are directional — <b>team &gt;&gt; company</b>; verify the specific role</span>
     </div>
 
@@ -201,8 +238,21 @@
           <span class="mini">Fast, low-process, intense</span>
           <span class="mini">Honest, high-trust, transparent</span>
           <span class="mini">Autonomy-trusting leadership</span>
-          <span class="mini">Series B–D / ~50–100+ · SF-friendly</span>
+          <span class="mini">Public or Series C+ (updated 22 Oct)</span>
+          <span class="mini">SF / Bay Area / remote</span>
         </div>
+      </div>
+      <div class="box rk">
+        <h3>Ranking criteria — set 22 Oct, scored per role</h3>
+        <div class="critgrid">
+          <div><span class="ck">Stage</span> Public or <b>Series C+</b> · weighted heavily, never a gate — an early-stage company sorts down, named, rather than disappearing</div>
+          <div><span class="ck">Role</span> <b>Product Manager</b> or Sr PM, <b>IC</b>. Forward Deployed PM counts in full; Deployment Strategist and AI Strategist score a notch below; Director, Head and Group PM score low on both role and role type</div>
+          <div><span class="ck">Customers</span> <b>B2B / Enterprise</b></div>
+          <div><span class="ck">Domains</span> AI&nbsp;agents and <b>AI eval &amp; quality</b> carry the most; AI/LLMs next; workflow automation and API integrations are adjacent credit</div>
+          <div><span class="ck">Industry</span> <b>Fintech, Enterprise SaaS, Healthtech</b> score full; other B2B sectors are neutral; consumer is penalised</div>
+          <div><span class="ck">Location</span> SF, Bay Area or remote</div>
+        </div>
+        <p class="rknote">Computed from each posting and the company's dossier — not researched, so every component on every card shows what it read and what it could not. Where a signal is missing the component scores the midpoint and says so, because scoring silence as zero would rank companies by how talkative their job board is.</p>
       </div>
     </div>
   </div>
@@ -229,6 +279,11 @@
     <button class="fbtn gate" data-f="ask">? One question away</button>
     <button class="fbtn gate" data-f="blocked">✕ Blocked — consider excluding</button>
   </div>
+  <div class="sortrow" role="group" aria-label="Sort order">
+    <span class="slbl">Sort</span>
+    <button class="sbtn" data-s="crit" aria-pressed="true">Criteria fit</button>
+    <button class="sbtn" data-s="score" aria-pressed="false">Research score</button>
+  </div>
   <input id="q" type="search" placeholder="Filter by company, role, or keyword…" aria-label="Filter companies">
   <span class="count" id="count"></span>
 </div></div>
@@ -237,7 +292,7 @@
   <h2 class="sec">Ranked overview</h2>
   <div class="legend" id="legend"></div>
   <div class="tablewrap"><table class="master"><thead><tr>
-    <th>#</th><th>Company</th><th>Role</th><th style="text-align:right">Score</th><th>Verdict</th><th>Gates</th><th>Location</th><th>$150K base</th><th>Headline read</th>
+    <th>#</th><th>Company</th><th>Role</th><th style="text-align:right" title="How well the open roles match your stated criteria: stage, role shape, IC, customers, domains, industry">Criteria</th><th style="text-align:right" title="The researched read on the company: team, funding, comp, sponsorship evidence">Research</th><th>Verdict</th><th>Gates</th><th>Location</th><th>$150K base</th><th>Headline read</th>
   </tr></thead><tbody id="mbody"></tbody></table></div>
 </div></section>
 
@@ -277,6 +332,15 @@ const FINDINGS = [
 const DATA = [ /*DATA*/ ];
 
 /* ---- render ---- */
+/* Escape anything interpolated into an ATTRIBUTE value. Card markup carried
+   `data-s="${attr(d.search)}"`, and the search blob is dossier prose: a single
+   straight quote in a headline — Google's "plus 2 additional locations",
+   1Password's bare "Senior Product Manager" — closed the attribute early and
+   the rest of the card's tag became attribute soup. 17 of 83 cards were
+   rendering mangled this way before this was found on 22 Oct. Element text is
+   deliberately NOT escaped: dossier fields carry intentional <b> and <i>. */
+function attr(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/"/g,'&quot;')
+  .replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function vpill(t,big){const o=TIER[t];return `<span class="vpill${big?' big':''}" style="background:${o.c}">${o.label}</span>`;}
 
 // Companies where an application is already in flight keep their other openings
@@ -391,16 +455,50 @@ function gateCell(d){
   const g=gatesOf(d);
   return ['spon','comp','loc'].map(k=>{
     const s=GSTYLE[g[k]]||GSTYLE['?'];
-    return `<span class="gpip" style="color:${s.c}" title="${GATE_LABEL[k]}: ${g[k]}">${s.t}</span>`;
+    return `<span class="gpip" style="color:${s.c}" title="${attr(GATE_LABEL[k])}: ${attr(g[k])}">${s.t}</span>`;
   }).join('');
 }
+/* ---- criteria fit ----
+   The third axis, and the newest (22 Oct). Gates say whether you can take a
+   job; the research score says how good the company is; this says how well its
+   open roles match the criteria you set — stage, role shape, IC, customer
+   type, domain, industry. It is computed, not researched, which is exactly why
+   every component publishes its reason: half the inputs are aggregator blurbs
+   that are thin on a good day. Scored in fit_criteria.py. */
+function critOf(d){return d.crit||null;}
+function critColor(n){return n>=90?'var(--t-strong)':n>=80?'var(--t-lean)':n>=70?'var(--t-poss)':n>=60?'var(--t-weak)':'var(--t-pass)';}
+function critCell(d){
+  const c=critOf(d); if(!c) return '<span style="color:var(--faint)">—</span>';
+  return `<span style="color:${critColor(c.score)}" title="Best of ${c.roles} open role(s): ${attr(c.role)}">${c.score}</span>`;
+}
+function critBox(d){
+  const c=critOf(d); if(!c) return '';
+  const bodies = c.bodies===c.roles ? '' :
+    ` · read from ${c.bodies} of ${c.roles} posting bod${c.roles===1?'y':'ies'}`;
+  return `<div class="critbox">
+    <div class="crithead"><b style="color:${critColor(c.score)}">${c.score}/100</b>
+      <span>criteria fit</span>
+      <span class="cro">best of ${c.roles} open role(s): <b>${c.role}</b>${bodies}</span></div>
+    ${c.parts.map(p=>{
+      const miss = p.pts <= p.max*0.3;
+      // Italic marks a genuine gap in the sources, so the IC default — which is
+      // a reading, not a gap — is deliberately not in this list.
+      const unread = /not read|no industry stated|no customer type stated|none of your five|no title on the row|matches none/.test(p.why);
+      return `<div class="critrow${miss?' miss':''}${unread?' unread':''}">
+        <span class="ck">${p.label}</span><span class="cp" style="color:${miss?'var(--t-pass)':'inherit'}">${p.pts}/${p.max}</span>
+        <span class="cw">${p.why}</span></div>`;
+    }).join('')}
+  </div>`;
+}
+
 function renderMaster(rows){
   document.getElementById('mbody').innerHTML = rows.map(d=>{
     const t=tierOf(d),c=TIER[t].c,st=statusOf(d);
     return `<tr><td class="rk">${d._rank??'—'}</td><td class="co">${d.co}</td><td>${d.role}</td>
+      <td class="cr">${critCell(d)}</td>
       <td class="sc" style="color:${c}">${d.pending?'—':(d.scoreLabel||d.score)}</td>
       <td>${vpill(t)}</td>
-      <td class="gt" title="${STATUS[st].label}">${gateCell(d)}</td>
+      <td class="gt" title="${attr(STATUS[st].label)}">${gateCell(d)}</td>
       <td>${d.locShort}</td><td>${clearsCell(d.clears)}</td>
       <td style="color:var(--muted);font-size:12.5px">${d.headline}</td></tr>`;
   }).join('');
@@ -430,20 +528,20 @@ function renderCards(rows){
           <div class="scorebox"><div class="num" style="color:${c}">${d.pending?'—':d.score}${d.pending?'':'<small>/100</small>'}</div>
             ${d.pending?'':`<div class="bar"><i style="width:${d.score}%;background:${c}"></i></div>`}
             ${vpill(t,true)}</div>
-        </div>`;
+        </div>${critBox(d)}`;
     if(d.pending){
-      return `<div class="card" data-tier="${t}" data-s="${d.search}">
+      return `<div class="card" data-tier="${t}" data-s="${attr(d.search)}">
       <div class="stripe" style="background:${c}"></div>
       <div class="cbody">${head}
         <div class="snap">${d.snap.map(s=>`<span class="s">${s}</span>`).join('')}</div>
         ${openRoles}
-        <div class="line"><span class="k">Status</span>${d.headline}${d.url?` &nbsp;<a href="${d.url}" target="_blank" rel="noopener">View posting →</a>`:''}</div>
+        <div class="line"><span class="k">Status</span>${d.headline}${d.url?` &nbsp;<a href="${attr(d.url)}" target="_blank" rel="noopener">View posting →</a>`:''}</div>
         ${(d.flags&&d.flags.length)?`<div class="tags"><span class="lbl">Quick gate flags</span>${d.flags.map(x=>`<span class="tag db">${x}</span>`).join('')}</div>`:''}
         <div class="conf">Not yet deep-researched — run a deep-dive to score this company against your criteria.</div>
       </div></div>`;
     }
     const dims=d.dims||{};
-    return `<div class="card" data-tier="${t}" data-s="${d.search}">
+    return `<div class="card" data-tier="${t}" data-s="${attr(d.search)}">
       <div class="stripe" style="background:${c}"></div>
       <div class="cbody">${head}
         <div class="snap">${d.snap.map(s=>`<span class="s">${s}</span>`).join('')}</div>
@@ -466,16 +564,34 @@ function renderCards(rows){
   }).join('');
 }
 
-let curFilter='all',curQ='';
+let curFilter='all',curQ='',curSort='crit';
 function apply(){
-  // A company you deprioritised ranks below everything you didn't, whatever it
-  // scores — the mark is a decision about your attention, and score alone would
-  // keep overriding it. Only companies whose *every* open role is Low sort down;
-  // a mixed company keeps its place (see _attach_priority in the generator).
+  // Three sinks before either score is consulted, because each one is a fact
+  // about whether the row is worth your attention at all:
+  //
+  //   deprioritised — your own mark. Only companies whose *every* open role is
+  //     Low sort down; a mixed company keeps its place (_attach_priority).
+  //   blocked — a tripped hard gate, usually a visa refusal. A blocked 95 on
+  //     criteria is still a company you cannot take, and the criteria score
+  //     knows nothing about gates: it reads the posting, not your eligibility.
+  //   pending on a research sort — nothing to sort by.
+  //
+  // Then the chosen axis, with the other one as the tiebreak: criteria fit
+  // separates the thick 70–79 research band, and the research score separates
+  // the many companies that now tie at 80+ on criteria.
+  const crit=x=>critOf(x)?critOf(x).score:-1;
+  const res=x=>(x.pending||x.score==null)?-1:x.score;
   let rows=DATA.slice().sort((a,b)=>{
     const dep=x=>x.deprioritized?1:0;
     if(dep(a)!==dep(b)) return dep(a)-dep(b);
-    return (b.pending?-1:b.score)-(a.pending?-1:a.score);
+    const blk=x=>statusOf(x)==='blocked'?1:0;
+    if(blk(a)!==blk(b)) return blk(a)-blk(b);
+    if(curSort==='crit'){
+      if(crit(b)!==crit(a)) return crit(b)-crit(a);
+      return res(b)-res(a);
+    }
+    if(res(b)!==res(a)) return res(b)-res(a);
+    return crit(b)-crit(a);
   });
   let n=0; rows.forEach(d=>{ d._rank = d.pending? null : (++n); });
   // "Ready to apply" is the one view where the fit score is not the right
@@ -503,6 +619,10 @@ function boot(){
   document.querySelectorAll('.fbtn').forEach(b=>b.addEventListener('click',()=>{
     document.querySelectorAll('.fbtn').forEach(x=>x.setAttribute('aria-pressed','false'));
     b.setAttribute('aria-pressed','true'); curFilter=b.dataset.f; apply();
+  }));
+  document.querySelectorAll('.sbtn').forEach(b=>b.addEventListener('click',()=>{
+    document.querySelectorAll('.sbtn').forEach(x=>x.setAttribute('aria-pressed','false'));
+    b.setAttribute('aria-pressed','true'); curSort=b.dataset.s; apply();
   }));
   document.getElementById('q').addEventListener('input',e=>{curQ=e.target.value.trim().toLowerCase();apply();});
 }

@@ -39,6 +39,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 import database
+import fit_criteria
 
 ROOT = Path(__file__).resolve().parent
 DB = ROOT / "startup_radar.db"
@@ -297,11 +298,103 @@ def _attach_priority(d: dict, slot: dict) -> None:
     d["deprioritized"] = len(slot["lowRoles"]) == len(slot["roles"])
 
 
+def _funding_stages(conn: sqlite3.Connection) -> dict[str, str]:
+    """`startups.funding_stage` by canonical company name.
+
+    The funding feed knows the round for companies it reported on, which is a
+    different and smaller set than the employers on the board — it covered 14
+    of the 68 researched companies when this was written. Worth reading anyway:
+    for an early-stage company it is often the only source that names the round
+    at all, and it is the one source stating it as a fact rather than in prose.
+    """
+    out: dict[str, str] = {}
+    for row in conn.execute(
+        "select company_name, funding_stage, coalesce(amount_raised,'') as amt "
+        "from startups where coalesce(funding_stage,'') != ''"
+    ):
+        out.setdefault(database.canon_company(row["company_name"]),
+                       f"{row['funding_stage']} {row['amt']}")
+    return out
+
+
+def _stage_blob(slot: dict, dossier: dict | None, funding_stage: str,
+                public_names: set) -> str:
+    """Every text we hold that might state this company's stage.
+
+    Four sources, in the order they are trusted:
+
+      1. the dossier snapshot, which was researched by hand and says things
+         like "Series F · $7.2B" or "Public consumer marketplace";
+      2. `startups.funding_stage` from the funding feed;
+      3. the aggregator blurb on the row, which carries Jobright's "Public
+         Company" / "Late Stage" / "Growth Stage" / "Early Stage";
+      4. a configured list of public employers, for the Googles and Microsofts
+         that no source bothers to call public because everybody knows.
+
+    They are concatenated rather than resolved because the scorer tests the
+    highest bucket first: if any source says public or Series C+, that is the
+    answer, and the remaining sources can only be less specific. The cost of
+    that shortcut is that a stale dossier saying "Series B" cannot be corrected
+    by a newer feed row saying "Series D" — but it also cannot be *overwritten*
+    by a thinner source, which is the failure that would actually mislead.
+    """
+    bits: list[str] = []
+    if dossier:
+        bits.append(dossier.get("headline") or "")
+        bits.extend(dossier.get("snap") or [])
+    if funding_stage:
+        bits.append(funding_stage)
+    bits.extend(slot["descs"])
+    if _norm(slot["name"]) in public_names:
+        bits.append("public company")
+    return " ".join(b for b in bits if b)
+
+
+def _public_names() -> set:
+    """Employers to treat as public without a source saying so.
+
+    Normalised through the same `_norm` the dossier index uses, so a config
+    entry matches however the board spells the company.
+    """
+    names = (_load_config().get("fit_ranking") or {}).get("public_companies") or []
+    return {_norm(str(n)) for n in names}
+
+
+def _criteria_for(slot: dict, dossier: dict | None, funding_stage: str,
+                  public_names: set, cfg: dict) -> dict | None:
+    """Score every open role at this company, keep the best.
+
+    Pending companies are scored too, and that is most of the value: they have
+    no research score at all, so without this they sort to the bottom as "—"
+    no matter how precisely they match the criteria.
+    """
+    stage_blob = _stage_blob(slot, dossier, funding_stage, public_names)
+    company_blob = " ".join(slot["descs"])
+    if dossier:
+        company_blob += " " + " ".join(
+            [dossier.get("headline") or ""] + list(dossier.get("snap") or []))
+    roles = [{
+        "title": title,
+        "body": slot["bodies"].get(title, ""),
+        "stage_blob": stage_blob,
+        "company_blob": company_blob,
+    } for title in slot["roles"]]
+    fit = fit_criteria.score_company(roles, cfg)
+    if fit is None:
+        return None
+    out = fit.as_dict()
+    out["bodies"] = sum(1 for t in slot["roles"] if slot["bodies"].get(t))
+    out["roles"] = len(roles)
+    return out
+
+
 def build_data() -> tuple[list[dict], dict]:
     dossiers = {(_norm(d["co"])): d for d in json.loads(DOSSIERS.read_text())}
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     excludes = _load_config_excludes()
+    cfg = _load_config()
+    public_names = _public_names()
     pinned = _pinned_companies()
     tombs = _tombstoned(conn)
     pinned_status: dict[str, str] = {}
@@ -309,9 +402,13 @@ def build_data() -> tuple[list[dict], dict]:
 
     rows = conn.execute(
         "select company_name, role_title, location, url, company_description, status, "
-        "       coalesce(priority,'') as priority, years_required "
+        "       coalesce(priority,'') as priority, years_required, description_text "
         "from job_matches"
     ).fetchall()
+    # Stage lives in a different place for almost every company, so all four
+    # sources are assembled per company and the criteria scorer reads whichever
+    # speaks first. See _stage_blob.
+    funding_stage = _funding_stages(conn)
 
     MAX_YEARS = _max_years()
     engaged = _engaged_companies(conn)
@@ -350,7 +447,8 @@ def build_data() -> tuple[list[dict], dict]:
                 continue
         slot = by_co.setdefault(key, {"name": r["company_name"], "roles": [], "locs": [],
                                       "urls": [], "descs": [], "maybeDupes": [],
-                                      "lowRoles": [], "prios": [], "overYears": []})
+                                      "lowRoles": [], "prios": [], "overYears": [],
+                                      "bodies": {}})
         # A posting whose stated product-experience bar is above the configured
         # cap. Shown rather than silently dropped: the figure is parsed from the
         # posting body, and a parse can be wrong (Google's "8 years of work
@@ -369,6 +467,11 @@ def build_data() -> tuple[list[dict], dict]:
             })
         if r["role_title"] and r["role_title"] not in slot["roles"]:
             slot["roles"].append(r["role_title"])
+        # Keyed by title so the criteria scorer reads each role against its own
+        # posting rather than one pooled blob: a company's roles can differ by
+        # 30 points, which is the whole reason the score is per role.
+        if r["role_title"] and (r["description_text"] or "").strip():
+            slot["bodies"].setdefault(r["role_title"], r["description_text"])
         if r["location"]:
             slot["locs"].append(r["location"])
         if r["url"]:
@@ -393,6 +496,10 @@ def build_data() -> tuple[list[dict], dict]:
             if slot["maybeDupes"]:
                 d["maybeDupes"] = slot["maybeDupes"]
             _attach_priority(d, slot)
+            crit = _criteria_for(slot, d, funding_stage.get(database.canon_company(
+                slot["name"]), ""), public_names, cfg)
+            if crit:
+                d["crit"] = crit
             new_roles = _new_since_research(d, open_roles)
             if new_roles:
                 score = d.get("score")
@@ -418,9 +525,12 @@ def build_data() -> tuple[list[dict], dict]:
                         else (f"${cmax:,}" if cmax else "comp not posted"))
             snap = [f"<b>{len(open_roles)}</b> open role(s)", f"Loc: {_loc_short(loc)}",
                     f"Comp: {comp_txt}", "Not yet deep-researched"]
+            crit = _criteria_for(slot, None, funding_stage.get(
+                database.canon_company(slot["name"]), ""), public_names, cfg)
             data.append({
                 "co": slot["name"], "role": open_roles[0] if open_roles else "—",
                 "openRoles": open_roles, "pending": True, "score": None,
+                **({"crit": crit} if crit else {}),
                 "locShort": _loc_short(loc), "clears": clears,
                 "headline": "New in your pipeline — not yet deep-researched.",
                 "snap": snap, "flags": flags, "url": slot["urls"][0] if slot["urls"] else "",

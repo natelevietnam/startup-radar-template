@@ -101,10 +101,15 @@ _REFUSE = [
     # plainly was read as silent while its sponsoring twin was read as an
     # offer. That asymmetry kept non-sponsoring roles on the board.
     r"\bsponsorship:?\s+not\s+(available|offered|provided)\b",
-    r"\bnot eligible for (visa |work |employment )?sponsorship\b",
+    # "immigration" belongs in this list alongside visa/work/employment:
+    # Accordion's AI PM posting (row 2351) ends "This position is not eligible
+    # for immigration sponsorship." and was read as silent, which is how a
+    # flat refusal — the one stance that excludes a row outright — reached the
+    # artifact as an open question.
+    r"\bnot eligible for (visa |work |employment |immigration )?sponsorship\b",
     r"\b(unable|not able) to sponsor\b",
-    r"\bwho do not require (visa |work |employment )?sponsorship\b",
-    r"\bmust not require (visa |work |employment )?sponsorship\b",
+    r"\bwho do not require (visa |work |employment |immigration )?sponsorship\b",
+    r"\bmust not require (visa |work |employment |immigration )?sponsorship\b",
     r"\bwe are unable to (provide|offer) (immigration|visa|work) ",
     r"\bunable to (provide|offer) (immigration|visa) (support|sponsorship|assistance)\b",
     # Phrased as a property of the candidate rather than the employer:

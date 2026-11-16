@@ -374,8 +374,8 @@ def _render_job(job: str, busy_elsewhere: bool):
         pidf.unlink(missing_ok=True)
 
     if pid:
-        st.sidebar.info(f"{spec['noun']} running — pid {pid}")
-        if st.sidebar.button(f"Stop {job}", key=f"stop_{job}"):
+        st.info(f"{spec['noun']} running — pid {pid}")
+        if st.button(f"Stop {job}", key=f"stop_{job}"):
             try:
                 os.kill(pid, 15)
             except OSError:
@@ -383,7 +383,7 @@ def _render_job(job: str, busy_elsewhere: bool):
             pidf.unlink(missing_ok=True)
             st.rerun()
     else:
-        if st.sidebar.button(spec["button"], key=f"run_{job}",
+        if st.button(spec["button"], key=f"run_{job}",
                              disabled=busy_elsewhere):
             _start_job(job)
             st.rerun()
@@ -392,21 +392,21 @@ def _render_job(job: str, busy_elsewhere: bool):
             rc, when = outcome
             stamp = f" · {when.strftime('%b %d, %H:%M')}" if when else ""
             if rc == 0:
-                st.sidebar.success(f"{spec['noun']} finished{stamp}")
+                st.success(f"{spec['noun']} finished{stamp}")
                 result = _job_result_line(job)
                 if result:
-                    st.sidebar.caption(result)
+                    st.caption(result)
             else:
-                st.sidebar.error(f"{spec['noun']} failed{stamp} — see the log below")
+                st.error(f"{spec['noun']} failed{stamp} — see the log below")
         elif log.exists():
             when = datetime.fromtimestamp(log.stat().st_mtime)
-            st.sidebar.caption(f"Last run {when.strftime('%b %d, %H:%M')}")
+            st.caption(f"Last run {when.strftime('%b %d, %H:%M')}")
 
     # Show the log whenever there is one to show: while running, and afterwards
     # for whatever the last run was. Previously this was gated on a session-state
     # flag, so the log vanished on reload exactly when you wanted to read it.
     if pid or _job_outcome(job):
-        with st.sidebar.expander(f"{spec['noun']} progress", expanded=bool(pid)):
+        with st.expander(f"{spec['noun']} progress", expanded=bool(pid)):
             st.code(_job_tail(job) or "(waiting for output...)", language=None)
     return pid
 
@@ -419,10 +419,83 @@ def _render_job(job: str, busy_elsewhere: bool):
 #
 # Only one at a time: both write job_matches, and two SQLite writers on one file
 # is how you get "database is locked" halfway through an otherwise fine run.
-_sync_pid = _job_pid("sync")
-_pipe_pid = _job_pid("pipeline")
-_sync_pid = _render_job("sync", busy_elsewhere=bool(_pipe_pid))
-_pipe_pid = _render_job("pipeline", busy_elsewhere=bool(_sync_pid))
+#
+# Both controls live in ONE auto-rerunning fragment, and that is what tells you
+# a run has finished without touching the page.
+#
+# What used to do it was a poll at the very bottom of the script: if a job is
+# live, sleep 3 and st.rerun(). A chain of whole-script reruns, each hop
+# depending on the last one reaching the final line. It dropped the ending in
+# two ways, both of which read to you as "it never said it was done":
+#
+#   * the terminal hop. The sidebar reads the pid up here and the poll re-read
+#     it 1,300 lines below, after the entire board had rendered. A job that
+#     ended inside that window had already been drawn as "running — pid N",
+#     and the poll then saw no live job and scheduled no further rerun. The
+#     last thing drawn stayed on screen, correct for a moment that had passed.
+#   * a broken hop never restarts. Anything that stops one script run short of
+#     the bottom ends the polling for good: the websocket dropping while the
+#     tab is backgrounded or the laptop sleeps, an exception in the page body,
+#     or clicking a widget during that sleep(3). Nothing ever picks it back up,
+#     so the sidebar sits on "running" until the page is reloaded by hand.
+#
+# A fragment's timer is owned by the session instead of by the previous run, so
+# neither case can end it. It reruns ONLY this panel — the board below is left
+# alone, which also stops a run from resetting your scroll position every three
+# seconds — and when it sees the job has gone it fires the toast and calls
+# st.rerun() itself, one full redraw with the new rows in it. Detection and
+# redraw are the same act, so there is no window left to lose them in.
+#
+# run_every is re-read on every full script run, so the timer exists only while
+# something is actually running and the page is idle when nothing is.
+_JOBS_LIVE = "_jobs_live"
+_JOB_TOASTS = "_job_toasts"
+
+
+@st.fragment(run_every=POLL_SECONDS if (_job_pid("sync") or _job_pid("pipeline")) else None)
+def _job_panel():
+    sync_pid = _render_job("sync", busy_elsewhere=bool(_job_pid("pipeline")))
+    pipe_pid = _render_job("pipeline", busy_elsewhere=bool(sync_pid))
+
+    # Which jobs were running when this panel last drew, so an ending can be
+    # named ("Cloud sync finished") rather than merely noticed. A set, not a
+    # bool: sync and the pipeline finish independently.
+    running = {j for j, pid in (("sync", sync_pid), ("pipeline", pipe_pid)) if pid}
+    ended = set(st.session_state.get(_JOBS_LIVE, ())) - running
+    st.session_state[_JOBS_LIVE] = running
+
+    # The toast is QUEUED, not raised here, and the queue is drained by the
+    # main script below. Two reasons, and the first one alone decides it:
+    # st.rerun() on the next line tears down the element tree this fragment
+    # just built, so a toast raised here is destroyed a few milliseconds after
+    # it appears — the notification you would actually miss. Raising it from
+    # the main script means it is created by the run that survives. It also
+    # keeps an overlay element out of a fragment, which is only allowed to
+    # write into its own container.
+    if ended:
+        queued = st.session_state.setdefault(_JOB_TOASTS, [])
+        for job in sorted(ended):
+            outcome = _job_outcome(job)
+            if not outcome:
+                continue    # stopped by hand: no exit code, nothing to report
+            rc, _when = outcome
+            noun = JOBS[job]["noun"]
+            if rc == 0:
+                detail = _job_result_line(job)
+                queued.append((f"{noun} finished" + (f" — {detail}" if detail else ""),
+                               ":material/check_circle:"))
+            else:
+                queued.append((f"{noun} failed (exit {rc}) — see the log in the sidebar",
+                               ":material/error:"))
+        st.rerun()          # app scope: redraw the board with what the run wrote
+
+
+with st.sidebar:
+    _job_panel()
+
+# Drained here rather than inside the fragment — see the note in _job_panel.
+for _msg, _icon in st.session_state.pop(_JOB_TOASTS, []):
+    st.toast(_msg, icon=_icon)
 
 
 # LinkedIn upload
@@ -1753,18 +1826,8 @@ elif page == "Application Tracker":
 
 
 
-# Auto-refresh while the pipeline runs — LAST, after the whole page has
-# rendered.
-#
-# This used to sit in the sidebar block, 300 lines above the page body. Every
-# poll therefore re-ran the script, hit st.rerun() before reaching any of the
-# page content, and started over: the sidebar drew, the body never did. The
-# dashboard was blank for as long as a run lasted, and because the liveness
-# check above was fooled by a zombie, "as long as a run lasted" meant forever.
-#
-# Polling is still the right shape — every data read here is cached on the DB's
-# mtime, so a rerun mid-run is cheap until the pipeline actually writes — but it
-# has to happen after the user has something to look at.
-if _job_pid("pipeline") or _job_pid("sync"):
-    time.sleep(POLL_SECONDS)
-    st.rerun()
+# The page body ends here. There is deliberately no poll-and-rerun block below
+# it any more: the job panel's fragment owns that now (see _job_panel). Putting
+# one back would reinstate the blank-dashboard bug this file used to have — a
+# rerun scheduled from the bottom restarts the script from the top, and if it
+# is reached before the body renders, the body never does.

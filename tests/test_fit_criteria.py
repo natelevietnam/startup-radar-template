@@ -278,3 +278,188 @@ def test_config_can_override_a_vocabulary():
     cfg = {"fit_ranking": {"role_ideal": ["widget wrangler"]}}
     assert fc.role_points("Widget Wrangler", cfg).points == fc.MAX_ROLE
     assert fc.role_points("Product Manager", cfg).points == fc._unknown(fc.MAX_ROLE)
+
+
+# --- stage decoys -----------------------------------------------------------
+# Every blob below is live text from fit_dossiers.json or a stored posting, cut
+# down to the clause that matters. Swept over all 572 dossiers, the bug this
+# pins scored 17 companies as public that are not, and gave 4 more full marks
+# for the wrong reason. Two families are worth telling apart: a company that
+# *sells to* the public sector, and a dossier saying it could find no public
+# record of the company at all.
+@pytest.mark.parametrize("blob", [
+    # Nearmap, Quantifind, Sierra, TRM Labs, Vision Government Solutions — five
+    # companies between Series B and Series C, every one selling to government.
+    "Solution Product Manager, Government — public sector solutions, "
+    "not core platform",
+    "Property tax software; CAMA is computer-assisted mass appraisal, "
+    "public sector assessment systems for local government",
+    "What is open now is the public-sector twin: same team, same craft",
+    "FedRAMP High, which is what makes the public sector seat real",
+])
+def test_selling_to_the_public_sector_is_not_being_a_public_company(blob):
+    part = fc.stage_points(blob, {})
+    assert part.points < fc.MAX_STAGE, part.reason
+    assert "public" not in part.reason.split("—")[0]
+
+
+@pytest.mark.parametrize("blob", [
+    "A1 returns no usable public record — no funding, founder or headcount",
+    "A single-word company name with no resolvable public identity",
+    "An SF AI startup with essentially no public footprint",
+    "No round found in any public source; the founder goes by a first name",
+    "The thinnest public record of the seventeen",
+    "No public funding record found; no product the board can point at",
+    "Long-running public criticism over AI-driven candidate scoring",
+    "Mixed public reputation, some scam allegations",
+    "The only thing the public web surfaces is a Ford autonomous-vehicle unit",
+])
+def test_a_dossier_that_found_nothing_is_not_a_public_company(blob):
+    """The worst of the two families, because it inverts the evidence.
+
+    Twelve dossiers said in prose that the company could not be verified — and
+    scored full marks for stage on the word "public" inside that sentence. The
+    thinner the research, the higher the rank.
+    """
+    part = fc.stage_points(blob, {})
+    assert part.points == fc._unknown(fc.MAX_STAGE), part.reason
+    assert "not read" in part.reason
+
+
+def test_an_unverifiable_company_keeps_whatever_stage_it_did_state():
+    """WISEcode's dossier, verbatim in shape: early stage *and* unverifiable.
+
+    Masking the decoy does not blank the blob — the bucket the dossier really
+    supports is still there to be read, one notch above nothing.
+    """
+    part = fc.stage_points(
+        "Cisco alum, early stage; funding detail thin in public sources", {})
+    assert part.points == 4, part.reason
+    assert "early stage" in part.reason
+
+
+def test_masking_a_decoy_leaves_the_real_stage_signal_standing():
+    """Veeva is a public benefit corporation *and* listed on the NYSE.
+
+    "Public benefit" is a charter rather than a listing — plenty of private AI
+    labs carry it — so it is masked, and the company still clears the bar on
+    the ticker that proves it.
+    """
+    part = fc.stage_points(
+        "Public benefit corporation, NYSE: VEEV, life sciences vertical SaaS", {})
+    assert part.points == fc.MAX_STAGE
+    assert "nyse" in part.reason.lower()
+
+
+def test_quantifind_keeps_full_marks_for_the_right_reason():
+    """Full marks either way, which is exactly why this was hard to notice.
+
+    The score did not move; the reason did, from "public" — read off "the
+    public sector" — to the round the dossier actually states.
+    """
+    part = fc.stage_points(
+        "Financial crime AI: AML, KYC, risk screening for financial services "
+        "and the public sector. Founded 2009, $117.9M raised, latest round "
+        "Series H-II, $22M (2025)", {})
+    assert part.points == fc.MAX_STAGE
+    assert "series h" in part.reason
+
+
+@pytest.mark.parametrize("blob", [
+    "Public",                                     # startups.funding_stage
+    "$175K/yr • Software · Public Company • 89%",  # the aggregator blurb
+    "Public; leadership in flux",                  # MongoDB
+    "Public, security software, ~10,000 staff",     # CrowdStrike, Okta
+    "Public healthcare data and clinical AI",       # Doximity, Tempus
+    "Public (NYSE: Z), large cap",                  # Zillow
+])
+def test_a_real_public_company_still_scores_full_marks(blob):
+    """The guard is a list of named contexts, never a neighbouring word.
+
+    Three of these look exactly like a decoy — "public" followed by an
+    unrelated noun — and all three are companies that really are listed. A
+    rule that keyed on the next word would break them.
+    """
+    part = fc.stage_points(blob, {})
+    assert part.points == fc.MAX_STAGE, part.reason
+
+
+def test_a_decoy_is_cut_only_on_a_whole_phrase():
+    """"Republic sector" is not "public sector", and "publicly" is its own word."""
+    assert fc._mask("Republic Sector Holdings", ("public sector",)) == "republic sector holdings"
+    assert fc.stage_points("Publicly traded, 4,000 staff", {}).points == fc.MAX_STAGE
+
+
+def test_config_can_add_a_stage_decoy():
+    cfg = {"fit_ranking": {"stage_decoys": ["public transit"]}}
+    assert fc.stage_points("Public transit ticketing, Series A", cfg).points == 4
+    assert fc.stage_points("Public transit ticketing, Series A", {}).points == fc.MAX_STAGE
+
+
+# --- plurals ----------------------------------------------------------------
+@pytest.mark.parametrize("phrase,plural", [
+    ("enterprise", "enterprises"),
+    ("individual contributor", "individual contributors"),
+    ("connector", "connectors"),
+    ("business", "businesses"),          # sibilant: + "es"
+    # Too short to pluralise safely: "hrs" is hours, and the rest already have
+    # their plural listed outright.
+    ("hr", ""),
+    ("ai", ""),
+    ("api", ""),
+    ("sdk", ""),
+    # No stem changes. "securities" is not "security".
+    ("security", ""),
+    ("model quality", ""),
+    ("information technology", ""),
+])
+def test_the_plural_rule_is_narrow(phrase, plural):
+    assert fc._plural(phrase) == plural
+
+
+@pytest.mark.parametrize("blob", [
+    "We sell to enterprises in regulated industries",
+    "Our customers are enterprises, not individuals",
+])
+def test_a_plural_customer_signal_counts(blob):
+    """The gap that started this: "enterprises" missed the `enterprise` signal.
+
+    `job_lens._phrase_in` is boundary-anchored, so the vocabularies only scored
+    the exact form someone happened to write down.
+    """
+    part = fc.customer_points(blob, {})
+    assert part.points == fc.MAX_CUSTOMER, part.reason
+
+
+def test_an_explicit_ic_plural_beats_a_manager_phrase():
+    """Ashby's Sr PM posting, which this moved from #51 to #13 on the board.
+
+    The body says "we believe individual contributors do their best work when
+    they have a deep understanding" — and, in its list of who the role is *not*
+    for, "you dislike written documentation and prefer to manage the team via
+    meetings". Singular-only matching saw the second and not the first.
+    """
+    body = ("At Ashby it's different: we believe individual contributors do "
+            "their best work when they have a deep understanding of the "
+            "problem. You're primarily a fit elsewhere if you dislike written "
+            "documentation and prefer to manage the team via meetings.")
+    part = fc.ic_points("Senior Product Manager", body, {})
+    assert part.points == fc.MAX_IC, part.reason
+    assert "individual contributor" in part.reason
+
+
+def test_a_plural_domain_hit_is_reported_in_the_singular_it_matched():
+    """The reason quotes the vocabulary entry, not the word in the posting.
+
+    Worth pinning: the entry is what a config edit would have to change, and 41
+    companies' reason strings changed this way with no change in score.
+    """
+    part = fc.domain_points("Own the agent orchestrations and their guardrails", {})
+    assert "orchestration" in part.reason
+    assert "guardrail" in part.reason
+
+
+def test_a_short_token_does_not_pluralise_into_a_false_industry():
+    """"40 hrs" must not read as HR tech, which is why the floor is 4."""
+    part = fc.industry_points("Full-time, 40 hrs per week, Austin TX", {})
+    assert part.points == fc._unknown(fc.MAX_INDUSTRY), part.reason

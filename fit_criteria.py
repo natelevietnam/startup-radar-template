@@ -43,13 +43,80 @@ controls which config is in play.
 Matching is `job_lens`'s, imported rather than reimplemented: the same
 whole-phrase, boundary-anchored rules that decide a lens signal decide a domain
 hit here. Two copies of that logic would drift, and the drift would be silent.
+It is wrapped, not copied, in two places — one regular plural per phrase, and a
+list of contexts where a stage word is talking about something other than the
+company. Both are explained where they are defined, and both only ever widen or
+narrow a *ranking*, never a cut.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Optional
 
 from job_lens import _norm, _phrase_in
+
+
+# --- matching ---------------------------------------------------------------
+# Plural-awareness, which `job_lens._phrase_in` deliberately does not have: it
+# anchors on word boundaries, so "enterprises" does not match the `enterprise`
+# B2B signal and "integrations" only scores because someone remembered to list
+# it next to "integration". That is the drift this closes. One regular English
+# plural is tried for every phrase, so the vocabularies only have to carry the
+# irregulars.
+#
+# It lives here rather than in `job_lens` on purpose. The same matcher decides
+# which rows the lens *cuts*; widening a cut is not a ranking change. This
+# module can only sort badly, so this is where a looser match is safe.
+#
+# Only the last word is pluralised, and only the regular plural of it:
+#
+#   4+ characters, because "hr" + s is "hrs" (hours) and "api" + s duplicates
+#   an entry already in the list. The short tokens are where the accidents are.
+#
+#   No stem changes. A consonant + "y" word gets no plural at all rather than
+#   a guess, because "securities" is not "security" and the industry component
+#   would have read a fintech posting as a security company. "quality" and
+#   "technology" therefore stay singular, and anything that matters there can
+#   be listed outright.
+_PLURAL_MIN = 4
+_SIBILANTS = ("s", "x", "z", "ch", "sh")
+_VOWELS = "aeiou"
+
+
+@lru_cache(maxsize=None)
+def _plural(phrase: str) -> str:
+    """The phrase's regular plural, or "" where there isn't a safe one."""
+    head, _sep, last = _norm(phrase).rpartition(" ")
+    if len(last) < _PLURAL_MIN:
+        return ""
+    if last.endswith("y") and last[-2] not in _VOWELS:
+        return ""       # y -> ies is a stem change; see the note above
+    plural = last + ("es" if last.endswith(_SIBILANTS) else "s")
+    return f"{head} {plural}".strip()
+
+
+def _matches(phrase: str, hay: str) -> bool:
+    """`job_lens._phrase_in`, plus the phrase's regular plural."""
+    if _phrase_in(phrase, hay):
+        return True
+    plural = _plural(phrase)
+    return bool(plural) and _phrase_in(plural, hay)
+
+
+def _mask(blob: str, decoys: tuple) -> str:
+    """Normalise `blob`, with every decoy phrase cut out of it.
+
+    Cutting rather than rewriting: the surrounding words are what the other
+    buckets read, and a decoy never carries a stage signal of its own.
+    """
+    hay = _norm(blob)
+    for phrase in decoys:
+        needle = _norm(phrase)
+        if needle:
+            hay = re.sub(rf"(?<![a-z0-9]){re.escape(needle)}(?![a-z0-9])", " ", hay)
+    return re.sub(r"\s+", " ", hay).strip()
 
 
 # Component ceilings. They sum to 100 so the number reads as a percentage of
@@ -98,6 +165,51 @@ _STAGE_EARLY = (
 # round under the bar, and the difference between "nearly there" and "seed"
 # is exactly the distinction the ranking is for.
 _STAGE_POINTS = {"full": MAX_STAGE, "mid": 8, "early": 4}
+
+# Phrases where a stage word is describing something other than the company's
+# own cap table. They are cut out of the blob before the buckets are tested,
+# because the word itself is a real signal and only its context makes it wrong
+# — the same trap the bare phrase "private equity" is kept out of _STAGE_FULL
+# for, handled here by subtraction instead of by omission, since "public" on
+# its own has to keep scoring.
+#
+# Every entry was found in the live stage blobs rather than imagined. Counted
+# over all 572 dossiers and every stored company blurb, they come in families:
+#
+#   "public sector"   7 hits / 5 companies, every one a market the employer
+#                     sells *to*: Sierra, TRM Labs, Nearmap, Quantifind,
+#                     Vision Government Solutions. Not one is listed. Two of
+#                     them clear the bar anyway on a round they do state
+#                     (TRM's Series C, Quantifind's Series H-II), which is the
+#                     tell that this was costing the *reason*, not only points.
+#
+#   "no public record / source / footprint / identity / funding"
+#                     16 hits / 12 companies, every one a sentence saying the
+#                     company could NOT be verified: A1, ActAI, Clarify
+#                     Health, Evlo AI, Habitat Health, Jack, RZR, Readdy,
+#                     Tilt, WISEcode, Zettabyte, turbalance. A dossier
+#                     admitting it found nothing scored the company as public,
+#                     so the thinner the research the higher the rank.
+#
+#   the rest         5 hits / 4 companies. "public web" and "public search"
+#                     are Latitude's product surface; "public criticism"
+#                     (HireVue) and "public reputation" (Crossing Hurdles) are
+#                     what people say about the employer. "public benefit" is
+#                     a charter rather than a listing — plenty of private AI
+#                     labs are PBCs — and Veeva, which is both, keeps full
+#                     marks off "nyse".
+#
+# What is deliberately absent is every phrase where "public" happens to be
+# followed by an unrelated word but genuinely means listed: "public leadership
+# in flux" (MongoDB), "public, security software" (CrowdStrike, Okta), "public
+# healthcare" (Doximity, Tempus) are all true. The list masks named contexts,
+# never a neighbouring word.
+_STAGE_DECOYS = (
+    "public sector", "public record", "public records",
+    "public source", "public sources", "public footprint",
+    "public identity", "public funding", "public benefit",
+    "public web", "public search", "public criticism", "public reputation",
+)
 
 
 @dataclass
@@ -169,11 +281,11 @@ def stage_points(blob: str, cfg: dict) -> Part:
     disagree often enough that which one won has to be visible at the call
     site, not buried here.
     """
-    hay = _norm(blob)
+    hay = _mask(blob, _vocab(cfg, "stage_decoys", _STAGE_DECOYS))
     for bucket, phrases in (("full", _vocab(cfg, "stage_full", _STAGE_FULL)),
                             ("mid", _vocab(cfg, "stage_mid", _STAGE_MID)),
                             ("early", _vocab(cfg, "stage_early", _STAGE_EARLY))):
-        hit = next((p for p in phrases if _phrase_in(p, hay)), None)
+        hit = next((p for p in phrases if _matches(p, hay)), None)
         if hit:
             pts = _STAGE_POINTS[bucket]
             if bucket == "full":
@@ -251,7 +363,7 @@ def role_points(title: str, cfg: dict) -> Part:
         ("ideal", _vocab(cfg, "role_ideal", _ROLE_IDEAL),
          "Product Manager — exactly the stated target"),
     ):
-        hit = next((p for p in phrases if _phrase_in(p, t)), None)
+        hit = next((p for p in phrases if _matches(p, t)), None)
         if hit:
             return Part("role", "Role", _ROLE_POINTS[key], MAX_ROLE,
                         f"“{hit.strip()}” — {why}")
@@ -298,12 +410,12 @@ def ic_points(title: str, body: str, cfg: dict) -> Part:
     """
     hay = _norm(f"{title} {body}")
     hit = next((p for p in _vocab(cfg, "ic_signals", _IC_SIGNALS)
-                if _phrase_in(p, hay)), None)
+                if _matches(p, hay)), None)
     if hit:
         return Part("ic", "Role type", MAX_IC, MAX_IC, f"“{hit.strip()}” — IC, as you want")
 
     hit = next((p for p in _vocab(cfg, "manager_signals", _MANAGER_SIGNALS)
-                if _phrase_in(p, hay)), None)
+                if _matches(p, hay)), None)
     if hit:
         return Part("ic", "Role type", 3, MAX_IC,
                     f"“{hit.strip()}” — carries people management")
@@ -330,12 +442,12 @@ def customer_points(blob: str, cfg: dict) -> Part:
     """
     hay = _norm(blob)
     hit = next((p for p in _vocab(cfg, "b2b_signals", _B2B_SIGNALS)
-                if _phrase_in(p, hay)), None)
+                if _matches(p, hay)), None)
     if hit:
         return Part("customer", "Customers", MAX_CUSTOMER, MAX_CUSTOMER,
                     f"“{hit.strip()}” — B2B / enterprise, as you want")
     hit = next((p for p in _vocab(cfg, "consumer_signals", _CONSUMER_SIGNALS)
-                if _phrase_in(p, hay)), None)
+                if _matches(p, hay)), None)
     if hit:
         return Part("customer", "Customers", 2, MAX_CUSTOMER,
                     f"“{hit.strip()}” — reads consumer, not B2B")
@@ -385,7 +497,7 @@ def domain_points(blob: str, cfg: dict) -> Part:
     found: list[str] = []
     pts = 0
     for label, (weight, phrases) in domains.items():
-        hit = next((p for p in phrases if _phrase_in(p, hay)), None)
+        hit = next((p for p in phrases if _matches(p, hay)), None)
         if hit:
             found.append(f"{label} (\u201c{hit.strip()}\u201d)")
             pts += weight
@@ -432,19 +544,19 @@ def industry_points(blob: str, cfg: dict) -> Part:
     targets = override if isinstance(override, dict) and override else _INDUSTRY_TARGET
 
     for label, phrases in targets.items():
-        hit = next((p for p in phrases if _phrase_in(p, hay)), None)
+        hit = next((p for p in phrases if _matches(p, hay)), None)
         if hit:
             return Part("industry", "Industry", _INDUSTRY_POINTS["target"],
                         MAX_INDUSTRY, f"{label} (“{hit.strip()}”) — a named target")
 
     hit = next((p for p in _vocab(cfg, "industry_neutral", _INDUSTRY_NEUTRAL)
-                if _phrase_in(p, hay)), None)
+                if _matches(p, hay)), None)
     if hit:
         return Part("industry", "Industry", _INDUSTRY_POINTS["neutral"], MAX_INDUSTRY,
                     f"“{hit.strip()}” — B2B, but not one of your three sectors")
 
     hit = next((p for p in _vocab(cfg, "industry_consumer", _INDUSTRY_CONSUMER)
-                if _phrase_in(p, hay)), None)
+                if _matches(p, hay)), None)
     if hit:
         return Part("industry", "Industry", _INDUSTRY_POINTS["consumer"], MAX_INDUSTRY,
                     f"“{hit.strip()}” — consumer, outside your sectors")

@@ -1064,6 +1064,20 @@ _COMPANY_REBRAND = {
     # the same failure as the HealthLeap split: a decision that did not travel
     # to the other spelling of its own employer.
     "clipboard": "clipboard health",
+
+    # Ambience Healthcare, which Jobright and LinkedIn spell two ways. Found
+    # 2026-11-16 by the warm-intro matcher below: an exact search for
+    # "Ambience" dropped the one connection at "Ambience Healthcare", and
+    # checking why showed the two spellings are one employer — both sets of
+    # postings sit on jobs.ashbyhq.com/ambiencehealthcare. Same tell as
+    # Clipboard: the company's own board token spells out the long form.
+    #
+    # The split was already costing more than an intro. "Ambience" carries a
+    # Not Interested on Product Manager, Ambulatory Coding and an open
+    # Emergency Department Platform req, while "Ambience Healthcare" carries a
+    # separate open Senior Product Manager row, so the board shows one employer
+    # as two and a decision on either spelling cannot travel to the other.
+    "ambience": "ambience healthcare",
 }
 
 
@@ -1999,19 +2013,52 @@ def get_connections_last_uploaded() -> str:
         conn.close()
 
 
+# A LinkedIn export carries whatever each member typed into their profile's
+# company field: "Box", "Box, Inc.", "Box | Content Cloud", "Stripe (Payments)".
+# Matching that with LIKE '%name%' is how a search for Box offered Inbox Health,
+# BoxGroup, BLACKBOX AI and Juicebox as warm introductions on 2026-11-05 — four
+# strangers at four unrelated companies, presented as people to ask for a
+# referral. An invented intro is worse than no intro, because it is acted on.
+#
+# So the company field is matched on canon_company equality, which already folds
+# punctuation, legal suffixes, domain forms and the known rebrands. Equality
+# against the whole field alone would be too strict, because that field is so
+# often a name plus a tagline, so it is also split on the separators people use
+# to join the two and every segment is canonicalised. "Box | Content Cloud"
+# yields {"box", "content cloud"} and matches; "Inbox Health" is a single
+# segment and does not.
+#
+# Recall is traded for precision deliberately: a missed intro costs a question
+# Nate could have asked, where a false one costs the asking.
+_CONNECTION_SEGMENT = re.compile(r"[|/()\[\]·•–—]|,| - | @ | at ", re.IGNORECASE)
+
+
+def connection_company_keys(company_field: str) -> set[str]:
+    """Every employer key a connection's free-text company field can mean."""
+    field = (company_field or "").strip()
+    if not field:
+        return set()
+    return {key for key in (canon_company(segment)
+                            for segment in [field] + _CONNECTION_SEGMENT.split(field))
+            if key}
+
+
+def connection_matches(target_company: str, company_field: str) -> bool:
+    """Whether a connection's company field names `target_company` itself."""
+    key = canon_company(target_company)
+    return bool(key) and key in connection_company_keys(company_field)
+
+
+def _exact_connections(frame: pd.DataFrame, company_names: list[str]) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    hit = frame["company"].map(
+        lambda field: any(connection_matches(name, field) for name in company_names))
+    return frame[hit].reset_index(drop=True)
+
+
 def search_connections_by_company(company_name: str) -> pd.DataFrame:
-    conn = _connect()
-    try:
-        return pd.read_sql_query(
-            """SELECT first_name, last_name, url, company, position
-               FROM connections
-               WHERE company LIKE ? COLLATE NOCASE
-               ORDER BY last_name""",
-            conn,
-            params=(f"%{company_name}%",),
-        )
-    finally:
-        conn.close()
+    return search_connections_by_companies([company_name])
 
 
 def search_connections_by_companies(company_names: list[str]) -> pd.DataFrame:
@@ -2019,9 +2066,16 @@ def search_connections_by_companies(company_names: list[str]) -> pd.DataFrame:
         return pd.DataFrame()
     conn = _connect()
     try:
+        # The LIKE stays as a prefilter only, so that this still reads a handful
+        # of candidate rows per company rather than the whole table on every one
+        # of the ~190 calls a board render makes. It is also why a rebrand whose
+        # two spellings share no substring — Abnormal Security against Abnormal
+        # AI — is still missed here: the prefilter never offers the row for
+        # canon_company to recognise. That is unchanged behaviour, and a
+        # separate fix from this one.
         placeholders = " OR ".join(["company LIKE ? COLLATE NOCASE"] * len(company_names))
         params = [f"%{n}%" for n in company_names]
-        return pd.read_sql_query(
+        frame = pd.read_sql_query(
             f"""SELECT first_name, last_name, url, company, position
                 FROM connections WHERE {placeholders}
                 ORDER BY last_name""",
@@ -2030,6 +2084,7 @@ def search_connections_by_companies(company_names: list[str]) -> pd.DataFrame:
         )
     finally:
         conn.close()
+    return _exact_connections(frame, company_names)
 
 
 def hide_intro(connection_url: str, company_name: str) -> None:

@@ -566,6 +566,18 @@ def industry_points(blob: str, cfg: dict) -> Part:
 
 
 # --- the whole thing --------------------------------------------------------
+# A stored body shorter than this is a fetch artifact rather than a posting, and
+# scoring the work off one would be worse than falling back to the employer
+# blurb: an over-aggressive JD cleaner once truncated Toast's stored body to 60
+# characters, which is a sentence, not a job.
+#
+# The floor currently rejects nothing. Of 244 undecided rows, 42 carry no body
+# at all and the next shortest is over 800 characters, so bodies are either
+# absent or substantial. It is here to keep the next truncation from being read
+# as the job.
+_BODY_MIN = 200
+
+
 def score_role(role: dict, cfg: dict) -> CriteriaFit:
     """Score one open role.
 
@@ -578,15 +590,42 @@ def score_role(role: dict, cfg: dict) -> CriteriaFit:
     title = role.get("title") or ""
     body = role.get("body") or ""
     company_blob = role.get("company_blob") or ""
-    # Domain and customer type are properties of the work, so the posting body
-    # leads; the company blurb is the fallback for the many rows with no body.
-    work_blob = f"{title} {body} {company_blob}"
+    # The domain is a property of the work, so the posting body leads and the
+    # company blurb is the fallback for the rows with no body.
+    #
+    # That is what this comment claimed while the line below concatenated all
+    # three, and the difference was not academic. One company_blob is shared by
+    # every open req at that employer, so whatever the blurb or the dossier
+    # says scored reqs it was never about. Writing "evaluations" into OpenAI's
+    # dossier gave its Technology Vertical req a full domain score and made it
+    # outrank the Financial Services seat the dossier was actually about; the
+    # same happened at Verkada, where Intercom Calling displaced Access
+    # Management. Both flip back here, which is the clearest evidence that the
+    # concatenation was deciding which role the card ranked.
+    #
+    # Where a body is stored it is better evidence by a wide margin, and it
+    # describes this req rather than the employer. Where none is stored the
+    # blurb is all there is, and half a signal beats none: 42 of 244 undecided
+    # rows are in that position.
+    work_blob = (f"{title} {body}" if len(body.strip()) >= _BODY_MIN
+                 else f"{title} {company_blob}")
+    # Customer type does NOT narrow with it, and that is a measured decision
+    # rather than an oversight. B2B-or-consumer is a property of the employer,
+    # like industry: Dave is a consumer fintech whichever req you read, and
+    # ProService Hawaii sells to businesses whether or not this posting says
+    # so. Narrowing this bucket to the body cost all three of those reads and
+    # bought nothing — no blurb in 191 companies was observed claiming a
+    # customer type the employer does not have. Wonderschool is the honest
+    # exception either way: it sells SaaS to childcare providers and serves
+    # families, so B2B is tested first and the employer-wide text is what lets
+    # that tie be broken on the stronger motion.
+    customer_blob = f"{title} {body} {company_blob}"
 
     parts = [
         stage_points(role.get("stage_blob") or "", cfg),
         role_points(title, cfg),
         ic_points(title, body, cfg),
-        customer_points(work_blob, cfg),
+        customer_points(customer_blob, cfg),
         domain_points(work_blob, cfg),
         # Industry is a property of the employer, so this reads the company
         # blurb and dossier only. Reading the posting body scored Accordion

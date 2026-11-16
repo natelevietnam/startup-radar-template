@@ -463,3 +463,141 @@ def test_a_short_token_does_not_pluralise_into_a_false_industry():
     """"40 hrs" must not read as HR tech, which is why the floor is 4."""
     part = fc.industry_points("Full-time, 40 hrs per week, Austin TX", {})
     assert part.points == fc._unknown(fc.MAX_INDUSTRY), part.reason
+
+
+# --- which text the work is read from ---------------------------------------
+# One company_blob is shared by every open req at an employer, so until
+# 2026-11-16 a dossier sentence scored reqs it was never written about. The
+# split below was measured over all 191 companies on the board: the domain
+# bucket moved on 12 of them, every move downward, and four cards changed which
+# role they rank — OpenAI, Verkada, Google and Kraken.
+_VERTICAL_BODY = (
+    "Own the technology vertical. You will partner with the largest software "
+    "companies in the world on deployments of our API platform, scoping "
+    "integrations, shaping the roadmap from what those accounts need, and "
+    "working with engineering on the limits of what we can support today."
+)
+_EVAL_DOSSIER = (
+    "Frontier lab whose charter is agents, evaluations and model quality. "
+    "Series C. Enterprise customers."
+)
+
+
+def test_a_dossier_cannot_lend_a_domain_to_a_posting_that_lacks_it():
+    """The OpenAI case, and the reason this split exists.
+
+    Writing "evaluations" into OpenAI's dossier gave its Technology Vertical
+    req a 5-of-5 domain score and made it outrank the Financial Services seat
+    the dossier was actually about. The body below never mentions evaluation,
+    so the bucket must not claim it does.
+    """
+    fit = fc.score_role({"title": "Product Manager, Technology Vertical",
+                         "body": _VERTICAL_BODY, "company_blob": _EVAL_DOSSIER,
+                         "stage_blob": "Series C"}, {})
+    reason = fit.part("domain").reason
+    assert "AI eval & quality" not in reason, reason
+    assert "API integrations" in reason, reason
+
+
+def test_a_row_with_no_body_still_reads_the_company_blurb():
+    """42 of 244 undecided rows carry no body at all.
+
+    For those the blurb is every word we hold about the work, and half a
+    signal beats none — a blank domain would rank them below rows we simply
+    have not fetched yet.
+    """
+    fit = fc.score_role({"title": "Product Manager", "body": "",
+                         "company_blob": _EVAL_DOSSIER, "stage_blob": "Series C"}, {})
+    reason = fit.part("domain").reason
+    assert "AI eval & quality" in reason, reason
+    assert "AI agents" in reason, reason
+
+
+def test_a_truncated_body_falls_back_to_the_blurb():
+    """A JD cleaner once cut Toast's stored body to 60 characters.
+
+    Sixty characters is a sentence, not a job, and scoring the work off one
+    would be worse than reading the employer blurb.
+    """
+    fit = fc.score_role({"title": "Product Manager",
+                         "body": "Explore Early Career India. Apply now to join our team.",
+                         "company_blob": _EVAL_DOSSIER, "stage_blob": "Series C"}, {})
+    assert "AI eval & quality" in fit.part("domain").reason
+
+
+@pytest.mark.parametrize("length,blurb_is_read", [
+    (fc._BODY_MIN - 1, True),
+    (fc._BODY_MIN, False),
+])
+def test_the_body_floor_is_the_only_switch(length, blurb_is_read):
+    # Deliberately contentless: what is under test is the length, and a body
+    # carrying real words would be asserting about the vocabularies instead.
+    body = "x" * length
+    fit = fc.score_role({"title": "Product Manager", "body": body,
+                         "company_blob": _EVAL_DOSSIER, "stage_blob": "Series C"}, {})
+    assert ("AI eval & quality" in fit.part("domain").reason) is blurb_is_read
+
+
+def test_customer_type_stays_an_employer_property():
+    """Measured on 2026-11-16, and the half of the change that was wrong.
+
+    Narrowing this bucket to the body too cost three true reads — Dave is a
+    consumer fintech whichever req you open, ProService Hawaii sells to
+    businesses, and Wonderschool does both — and bought nothing: no blurb in
+    191 companies claimed a customer type its employer does not have.
+    """
+    consumer = fc.score_role({"title": "Senior Product Manager, Invest",
+                              "body": _VERTICAL_BODY,
+                              "company_blob": "consumer • level: mid",
+                              "stage_blob": "Series C"}, {})
+    assert "consumer" in consumer.part("customer").reason
+
+    b2b = fc.score_role({"title": "Product Manager",
+                         "body": _VERTICAL_BODY,
+                         "company_blob": "Enterprise HR services for businesses",
+                         "stage_blob": "Series C"}, {})
+    assert b2b.part("customer").points == fc.MAX_CUSTOMER
+
+
+def test_industry_is_still_employer_only_when_a_body_is_present():
+    """Unchanged by the split, and the guard that says so.
+
+    Accordion's client list is in the body; the blurb says consulting. The
+    domain bucket now reads that body, so this asserts the industry bucket
+    still does not.
+    """
+    body = _VERTICAL_BODY + (" We serve Retail, CPG, Healthcare, Media & "
+                             "Entertainment and Logistics clients.")
+    fit = fc.score_role({"title": "AI Product Manager", "body": body,
+                         "company_blob": "consulting • level: mid",
+                         "stage_blob": "Series C"}, {})
+    assert fit.part("industry").points < fc.MAX_INDUSTRY
+
+
+def test_the_card_ranks_the_req_whose_own_body_matches():
+    """Verkada: Intercom Calling displaced Access Management, and flips back.
+
+    Both reqs share one blurb, so the dossier's own words decided the ranking.
+    Here the agent and eval language lives in one body only, and that is the
+    req the card must name.
+    """
+    common = {"stage_blob": "Series C", "company_blob": _EVAL_DOSSIER}
+    roles = [
+        {"title": "Senior Product Manager, Intercom Calling",
+         "body": ("Own the calling surface end to end: provisioning, call "
+                  "quality, the hardware pairing flow and the admin console "
+                  "that installers use on site every day across our range. "
+                  "You will work with hardware engineering on the next "
+                  "intercom revision and with support on the install guides "
+                  "the field team leaves behind at every site."),
+         **common},
+        {"title": "Senior Product Manager, Access Management",
+         "body": ("Own the agentic access roadmap: evaluation of door-level "
+                  "decisions, autonomous agent workflows for provisioning, "
+                  "and the integrations API that identity providers call. "
+                  "You will set the benchmarks that say whether an automated "
+                  "decision was right, and own the audit trail an "
+                  "administrator reads when it was not."),
+         **common},
+    ]
+    assert fc.score_company(roles, {}).role == "Senior Product Manager, Access Management"
